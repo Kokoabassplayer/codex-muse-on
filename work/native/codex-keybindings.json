@@ -1,0 +1,66 @@
+[
+  {
+    "command": "approval.approve",
+    "key": "Ctrl+Command+Alt+Shift+2"
+  },
+  {
+    "command": "approval.decline",
+    "key": "Ctrl+Command+Alt+Shift+3"
+  },
+  {
+    "command": "composer.decreaseReasoningEffort",
+    "key": "Ctrl+Command+Alt+Shift+A"
+  },
+  {
+    "command": "composer.increaseReasoningEffort",
+    "key": "Ctrl+Command+Alt+Shift+B"
+  },
+  {
+    "command": "composer.openModelPicker",
+    "key": "Ctrl+Command+Alt+Shift+G"
+  },
+  {
+    "command": "composer.submit",
+    "key": "Ctrl+Command+Alt+Shift+6"
+  },
+  {
+    "command": "composer.toggleFastMode",
+    "key": "Ctrl+Command+Alt+Shift+1"
+  },
+  {
+    "command": "copyConversationMarkdown",
+    "key": "Ctrl+Command+Alt+Shift+5"
+  },
+  {
+    "command": "environmentAction1",
+    "key": "Ctrl+Command+Alt+Shift+9"
+  },
+  {
+    "command": "forkThread",
+    "key": "Ctrl+Command+Alt+Shift+4"
+  },
+  {
+    "command": "globalDictationHold",
+    "key": "Ctrl+Command+Alt+Shift+8"
+  },
+  {
+    "command": "navigateBack",
+    "key": "Ctrl+Command+Alt+Shift+E"
+  },
+  {
+    "command": "navigateForward",
+    "key": "Ctrl+Command+Alt+Shift+F"
+  },
+  {
+    "command": "nextThread",
+    "key": "Ctrl+Command+Alt+Shift+D"
+  },
+  {
+    "command": "previousThread",
+    "key": "Ctrl+Command+Alt+Shift+C"
+  },
+  {
+    "command": "toggleReviewTab",
+    "key": "Ctrl+Command+Alt+Shift+7"
+  }
+]

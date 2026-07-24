@@ -1,8 +1,9 @@
 # Codex Muse-On safety report
 
-Status: pre-publication safety baseline for the local `0.3.1` prototype.
-Controller source, mappings, app bundles, and binaries are intentionally not
-included in this repository baseline.
+Status: pre-publication safety baseline for the local `0.3.1` prototype and
+the proposed public-source checkpoint. Reviewable Phase 2 source, mappings,
+and tests are prepared for separate approval; app bundles, binaries, logs,
+local mapping state, and generated analyzer artifacts remain excluded.
 
 ## Current safety behavior
 
@@ -17,6 +18,9 @@ included in this repository baseline.
   handling, not a hard real-time guarantee. The per-device key filter remains
   in place during the helper session so raw controller keys cannot leak into
   another application.
+- **Push-to-talk hold:** the pedal path emits debounced begin/end actions and
+  is covered by native tests plus live verification. Focus loss, disconnect,
+  and cleanup attempt a synthetic hold release; a failed release is fatal.
 - **Unplug handling:** a removed controller interface can no longer route actions.
   Synthetic hold release is attempted and the temporary per-device mapping is
   restored or cleared with the disconnected device; release or restoration

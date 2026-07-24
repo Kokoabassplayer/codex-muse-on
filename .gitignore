@@ -1,5 +1,21 @@
-# Keep unpublished prototype implementation and generated artifacts local.
-/work/
+# Keep exploratory work and generated artifacts local, while allowing the
+# reviewable Phase 2 native source and tests under work/native.
+/work/*
+!/work/native/
+!/work/native/**
+
+# Never publish native build products, analyzer state, or legacy experiments.
+/work/native/build/
+/work/native/*.app/
+/work/native/*.dSYM/
+/work/native/.DS_Store
+/work/native/*.plist
+!/work/native/app/Info.plist
+/work/native/muse_on_*_test
+/work/native/muse_on_listener
+/work/native/muse_on_listener_phase2
+/work/native/muse_on_listener_phase1.c
+
 /outputs/
 /muse_on_key_filter.plist
 

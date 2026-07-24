@@ -1,0 +1,3 @@
+# Keep diagnostics local and user-controlled
+
+Codex Muse-On keeps only a bounded in-memory diagnostic history of state transitions, action identifiers, and error codes, clearing it on Quit and excluding raw input or user content. **Copy Diagnostics** places that reviewed text on the clipboard only when requested. **Report a Problem…** opens this repository's GitHub New Issue form directly, preferably with a safe prefilled title or template, but never uploads diagnostics, stores an authentication token, creates an issue silently, or submits it. The user reviews the form, decides whether to paste diagnostics, and explicitly clicks Submit. This trades automatic support telemetry for a smaller privacy and trust surface.

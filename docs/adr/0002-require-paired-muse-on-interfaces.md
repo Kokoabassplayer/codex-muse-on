@@ -1,0 +1,3 @@
+# Require both Muse-On interfaces for Connected
+
+Codex Muse-On treats the controller as Connected only when its button interface and joystick interface are both present, validated, and belong to the same physical Muse-On. Loss of either interface makes the controller Disconnected and shortcut dispatch Inactive until both return; no external Mac keyboard is required. Exactly one complete controller must be present: more than one becomes Inactive — Multiple Controllers until ambiguity clears. This chooses a fail-closed whole-controller model over partial or arbitrary operation because macOS exposes each physical Muse-On as multiple HID interfaces.
