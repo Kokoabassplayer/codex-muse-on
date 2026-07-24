@@ -1,0 +1,8 @@
+# Keep unpublished prototype implementation and generated artifacts local.
+/work/
+/outputs/
+/muse_on_key_filter.plist
+
+# Never publish local macOS build products from this baseline.
+*.app/
+*.dSYM/
