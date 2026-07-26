@@ -10,6 +10,13 @@ TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_platform_test muse_on_key_filter_test muse_on_state_coordinator_test \
 	muse_on_setup_state_test muse_on_connection_test muse_on_diagnostics_test \
 	muse_on_controller_map_test
+FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
+	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test
+ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
+	muse_on_key_filter.plist muse_on_state_coordinator.plist \
+	muse_on_setup_state.plist muse_on_connection.plist \
+	muse_on_diagnostics.plist muse_on_menu_bar.plist
+SANITIZER_FLAGS ?= -fsanitize=address,undefined
 
 test: $(TEST_BINARIES)
 	./muse_on_decoder_test
@@ -24,6 +31,19 @@ test: $(TEST_BINARIES)
 	./muse_on_connection_test
 	./muse_on_diagnostics_test
 	./muse_on_controller_map_test
+
+test-focused: $(FOCUSED_TEST_BINARIES)
+	./muse_on_state_coordinator_test
+	./muse_on_connection_test
+	./muse_on_key_filter_test
+	./muse_on_platform_test
+	./muse_on_controller_map_test
+
+test-sanitize:
+	@set -eu; \
+	$(MAKE) clean; \
+	$(MAKE) CFLAGS="$(CFLAGS) $(SANITIZER_FLAGS)" test; \
+	$(MAKE) clean
 
 muse_on_decoder_test: muse_on_decoder.c tests/muse_on_decoder_test.c muse_on_decoder.h
 	$(CC) $(CFLAGS) -I. muse_on_decoder.c tests/muse_on_decoder_test.c -o $@
@@ -87,8 +107,14 @@ analyze:
 	$(CC) --analyze $(CFLAGS) -I. muse_on_diagnostics.c
 	$(CC) --analyze $(CFLAGS) -fobjc-arc -I. muse_on_menu_bar.m
 
+package:
+	./package_app.sh
+
+verify-bundle: package
+	./tests/verify_bundle.sh
+
 clean:
 	rm -f $(TEST_BINARIES) $(TEST_BINARIES:%=%_san) \
-		muse_on_listener
+		muse_on_listener $(ANALYZER_REPORTS)
 
-.PHONY: test clean listener analyze
+.PHONY: test test-focused test-sanitize clean listener analyze package verify-bundle

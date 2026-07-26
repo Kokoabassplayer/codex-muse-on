@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 022
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 NATIVE_DIR=$(CDPATH= cd -- "$SCRIPT_DIR" && pwd)
@@ -38,6 +39,8 @@ clang -std=c11 -Wall -Wextra -Werror -pedantic -I"$NATIVE_DIR" \
   -framework AppKit -framework ApplicationServices -framework Carbon \
   -o "$MACOS_DIR/muse_on_listener"
 cp "$NATIVE_DIR/app/Info.plist" "$CONTENTS_DIR/Info.plist"
-codesign --force --sign - "$APP_PATH"
+codesign --force --sign - --timestamp=none "$MACOS_DIR/CodexMuseOn"
+codesign --force --sign - --timestamp=none "$MACOS_DIR/muse_on_listener"
+codesign --force --sign - --timestamp=none "$APP_PATH"
 
 printf '%s\n' "$APP_PATH"
