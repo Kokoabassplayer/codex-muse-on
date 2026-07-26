@@ -5,17 +5,17 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>muse_on_listener</string>
+  <string>CodexMuseOn</string>
   <key>CFBundleIdentifier</key>
-  <string>com.kokoabassplayer.codex-muse-on.monitor</string>
+  <string>com.kokoabassplayer.codex-muse-on</string>
   <key>CFBundleName</key>
-  <string>Codex Muse-On Monitor</string>
+  <string>Codex Muse-On</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-    <string>0.3.1</string>
+    <string>0.4.0</string>
   <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>5</string>
   <key>LSUIElement</key>
   <true/>
 </dict>
