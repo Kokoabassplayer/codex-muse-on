@@ -1,0 +1,106 @@
+#ifndef MUSE_ON_STATE_COORDINATOR_H
+#define MUSE_ON_STATE_COORDINATOR_H
+
+#include <stdbool.h>
+
+/*
+ * Deterministic application state coordinator.
+ *
+ * Sits between the future native UI and the macOS/HID adapters. It accepts
+ * approved user commands and observed platform prerequisites and produces a
+ * single visible status plus requested effects. It contains zero AppKit,
+ * IOKit, HID, permission, or process calls and is fully testable in plain C.
+ *
+ * Domain vocabulary follows CONTEXT.md:
+ *   Disabled      - persistent user-selected state; nothing dispatches.
+ *   Enabled       - persistent user-approved intent to become Active.
+ *   Active        - temporary state where shortcut dispatch is permitted.
+ *   Inactive      - Enabled but at least one Active prerequisite is unmet;
+ *                   the menu shows exactly one reason.
+ *   Safety latch  - fail-closed after a safety-critical failure; Retry
+ *                   revalidates every prerequisite before dispatch resumes.
+ */
+
+typedef enum {
+  MUSE_ON_STATUS_DISABLED = 0,
+  MUSE_ON_STATUS_INACTIVE,
+  MUSE_ON_STATUS_ACTIVE,
+  MUSE_ON_STATUS_SAFETY_LATCH
+} MuseOnStatus;
+
+/*
+ * Inactive Reason priority, highest first (CONTEXT.md "Inactive Reason").
+ * The coordinator reports exactly one reason at a time. When the status is
+ * not Inactive the reason is MUSE_ON_INACTIVE_REASON_NONE.
+ */
+typedef enum {
+  MUSE_ON_INACTIVE_REASON_NONE = 0,
+  MUSE_ON_INACTIVE_REASON_SAFETY_LATCH,    /* 1 */
+  MUSE_ON_INACTIVE_REASON_PERMISSION,      /* 2 */
+  MUSE_ON_INACTIVE_REASON_MULTIPLE,        /* 3 */
+  MUSE_ON_INACTIVE_REASON_DISCONNECTED,    /* 4 */
+  MUSE_ON_INACTIVE_REASON_SESSION,         /* 5 */
+  MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND,  /* 6 */
+  MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS /* 7 */
+} MuseOnInactiveReason;
+
+typedef enum {
+  MUSE_ON_COMMAND_NONE = 0,
+  MUSE_ON_COMMAND_DISABLE,
+  MUSE_ON_COMMAND_ENABLE,
+  MUSE_ON_COMMAND_RETRY
+} MuseOnCommand;
+
+/*
+ * Observed platform prerequisites. All fields are plain values supplied by
+ * the adapter layer; the coordinator never queries the OS itself. The
+ * safety_latched observation sets the internal latch, but only an explicit
+ * MUSE_ON_COMMAND_RETRY with all gates clear can clear it.
+ */
+typedef struct {
+  bool safety_latched;      /* safety-critical failure observed */
+  bool permission_granted;  /* required control permission present */
+  bool controller_connected;/* exactly one complete Muse-On present */
+  bool multiple_controllers;/* more than one complete Muse-On present */
+  bool session_available;   /* session awake, unlocked, active */
+  bool codex_foreground;    /* com.openai.codex frontmost */
+  bool inputs_released;     /* Neutral Entry: selected-profile inputs freed */
+} MuseOnPrerequisites;
+
+/*
+ * Effects the coordinator requests of the adapter layer. The coordinator
+ * never performs these; it only asks.
+ */
+typedef struct {
+  bool request_filter;    /* apply per-device raw-button filtering */
+  bool request_dispatch;  /* shortcut dispatch permitted */
+} MuseOnEffects;
+
+typedef struct {
+  MuseOnStatus status;
+  MuseOnInactiveReason inactive_reason;
+  bool enabled_intent;    /* persistent Enabled intent (ADR 0001) */
+  bool safety_latched;    /* internal latch: survives until Retry clears it */
+  MuseOnEffects effects;
+} MuseOnState;
+
+/* Initialize a coordinator state in the initial Disabled state. */
+void muse_on_state_init(MuseOnState *state);
+
+/*
+ * Apply a user command (or MUSE_ON_COMMAND_NONE for a pure observation),
+ * then fold in observed prerequisites, producing the new visible status,
+ * inactive reason, and requested effects.
+ *
+ * Safety latch is sticky: once entered, it persists in coordinator state
+ * until an explicit MUSE_ON_COMMAND_RETRY with every gate clear. A later
+ * ordinary observation (MUSE_ON_COMMAND_NONE) with safety_latched=false
+ * does NOT auto-resume.
+ */
+void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
+                         MuseOnPrerequisites prerequisites);
+
+const char *muse_on_status_string(MuseOnStatus status);
+const char *muse_on_inactive_reason_string(MuseOnInactiveReason reason);
+
+#endif
