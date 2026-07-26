@@ -4,6 +4,7 @@ Run only after explicit approval to use the stable local install. These checks
 remain outside deterministic repository verification:
 
 - [ ] Paired HID discovery finds exactly one complete Muse-On.
+- [ ] Two complete Muse-On controllers produce `Inactive — Multiple controllers`, dispatch nothing, and recover automatically only when exactly one complete controller remains and the normal gates/Neutral Entry pass.
 - [ ] Pedal reports work when `Pedal Enabled` is selected.
 - [ ] Per-device filter apply, readback, and restoration succeed.
 - [ ] Disconnect is safe in either interface order; no raw-key leakage occurs.
