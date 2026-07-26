@@ -7,19 +7,28 @@
 #include <unistd.h>
 
 #include "muse_on_platform.h"
+#include "muse_on_action_map.h"
+#include "muse_on_connection.h"
 #include "muse_on_setup_state.h"
 #include "muse_on_state_coordinator.h"
 
 static NSString *const kEnabledIntentKey = @"enabledIntent";
 static NSString *const kFirstEnableCompletedKey = @"firstEnableCompleted";
 static NSString *const kStartAutomaticallyKey = @"startAutomatically";
+static NSString *const kControlProfileKey = @"controlProfile";
 static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
 
 @interface MuseOnAppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSPopover *popover;
+@property(nonatomic, strong) NSTask *listenerTask;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *interfaces;
+@property(nonatomic, strong) NSMutableData *listenerOutputBuffer;
+@property(nonatomic) BOOL restartListenerAfterExit;
+@property(nonatomic) BOOL controllerConnected;
 @property(nonatomic) MuseOnSetupState setup;
 @property(nonatomic) MuseOnState coordinator;
+@property(nonatomic) MuseOnProfile profile;
 @property(nonatomic) int lockFd;
 @end
 
@@ -46,6 +55,8 @@ static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
   muse_on_setup_state_init(&_setup, [defaults boolForKey:kEnabledIntentKey],
                           [defaults boolForKey:kStartAutomaticallyKey]);
   muse_on_state_init(&_coordinator);
+  _profile = [[defaults stringForKey:kControlProfileKey] isEqualToString:@"pedal"]
+      ? MUSE_ON_PROFILE_PEDAL : MUSE_ON_PROFILE_CONTROLLER_ONLY;
 }
 
 - (void)saveSetup {
@@ -54,11 +65,123 @@ static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
   [defaults setBool:_setup.start_automatically forKey:kStartAutomaticallyKey];
 }
 
+- (BOOL)hasSingleCompleteController {
+  NSArray<NSDictionary *> *observed = self.interfaces.allValues;
+  MuseOnObservedInterface *interfaces;
+  size_t count = observed.count;
+  size_t index;
+  uint32_t locationID = 0;
+  BOOL connected;
+
+  if (count == 0) return NO;
+  interfaces = calloc(count, sizeof(*interfaces));
+  if (!interfaces) return NO;
+  for (index = 0; index < count; index++) {
+    NSDictionary *entry = observed[index];
+    interfaces[index] = (MuseOnObservedInterface){
+        [entry[@"kind"] integerValue], [entry[@"location"] unsignedIntValue], true};
+  }
+  connected = muse_on_find_single_complete_controller(interfaces, count, &locationID);
+  free(interfaces);
+  return connected;
+}
+
+- (void)consumeListenerData:(NSData *)data {
+  [self.listenerOutputBuffer appendData:data];
+  for (;;) {
+    const uint8_t *bytes = self.listenerOutputBuffer.bytes;
+    NSUInteger length = self.listenerOutputBuffer.length;
+    NSUInteger index;
+    NSRange newline = NSMakeRange(NSNotFound, 0);
+    for (index = 0; index < length; index++) {
+      if (bytes[index] == '\n') {
+        newline = NSMakeRange(index, 1);
+        break;
+      }
+    }
+    if (newline.location == NSNotFound) break;
+    NSData *line = [self.listenerOutputBuffer subdataWithRange:
+        NSMakeRange(0, newline.location)];
+    [self.listenerOutputBuffer replaceBytesInRange:
+        NSMakeRange(0, newline.location + 1) withBytes:NULL length:0];
+    NSDictionary *event = [NSJSONSerialization JSONObjectWithData:line
+                                                           options:0 error:nil];
+    if (![event isKindOfClass:[NSDictionary class]]) continue;
+    NSString *name = event[@"event"];
+    NSString *interface = event[@"interface"];
+    NSNumber *location = event[@"locationID"];
+    if (([name isEqualToString:@"device_added"] ||
+         [name isEqualToString:@"device_removed"]) && interface && location) {
+      MuseOnObservedInterfaceKind kind = [interface isEqualToString:@"keyboard"]
+          ? MUSE_ON_OBSERVED_KEYBOARD : MUSE_ON_OBSERVED_JOYSTICK;
+      NSString *key = [NSString stringWithFormat:@"%@:%@", interface, location];
+      if ([name isEqualToString:@"device_added"]) {
+        self.interfaces[key] = @{@"kind": @(kind), @"location": location};
+      } else {
+        [self.interfaces removeObjectForKey:key];
+      }
+      self.controllerConnected = [self hasSingleCompleteController];
+      if (self.popover.shown) [self refreshMenu];
+    }
+  }
+}
+
+- (void)stopListener {
+  self.restartListenerAfterExit = NO;
+  if (self.listenerTask.running) [self.listenerTask terminate];
+}
+
+- (void)startListenerIfNeeded {
+  NSString *path;
+  NSTask *task;
+  if (!_setup.enabled || self.listenerTask != nil) return;
+  path = [[NSBundle mainBundle] pathForAuxiliaryExecutable:@"muse_on_listener"];
+  if (!path) return;
+  task = [[NSTask alloc] init];
+  task.launchPath = path;
+  task.arguments = @[@"--mode=active", _profile == MUSE_ON_PROFILE_PEDAL
+      ? @"--profile=pedal" : @"--profile=controller-only"];
+  self.interfaces = [NSMutableDictionary dictionary];
+  self.listenerOutputBuffer = [NSMutableData data];
+  self.controllerConnected = NO;
+  NSPipe *output = [NSPipe pipe];
+  task.standardOutput = output;
+  __weak MuseOnAppDelegate *weakSelf = self;
+  output.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+    NSData *data = handle.availableData;
+    if (data.length == 0) {
+      handle.readabilityHandler = nil;
+      return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf consumeListenerData:data];
+    });
+  };
+  task.terminationHandler = ^(NSTask *finishedTask) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (weakSelf.listenerTask != finishedTask) return;
+      weakSelf.listenerTask = nil;
+      weakSelf.controllerConnected = NO;
+      [weakSelf.interfaces removeAllObjects];
+      if (weakSelf.restartListenerAfterExit) {
+        weakSelf.restartListenerAfterExit = NO;
+        [weakSelf startListenerIfNeeded];
+      }
+    });
+  };
+  @try {
+    [task launch];
+    self.listenerTask = task;
+  } @catch (__unused NSException *exception) {
+    self.listenerTask = nil;
+  }
+}
+
 - (void)updateCoordinatorWithCommand:(MuseOnCommand)command {
   MuseOnPrerequisites prerequisites = {
       .safety_latched = false,
       .permission_granted = muse_on_preflight_post_event_access(),
-      .controller_connected = false, /* HID adapter lands in a later ticket. */
+      .controller_connected = self.controllerConnected,
       .multiple_controllers = false,
       .session_available = true,
       .codex_foreground = muse_on_codex_is_frontmost(),
@@ -91,7 +214,8 @@ static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
     field.lineBreakMode = NSLineBreakByTruncatingTail;
     return field;
   };
-  [stack addArrangedSubview:label(@"Muse-On: Disconnected")];
+  [stack addArrangedSubview:label(self.controllerConnected
+      ? @"Muse-On: Connected" : @"Muse-On: Disconnected")];
   [stack addArrangedSubview:label([self controlStatusText])];
 
   NSButton *controlButton = [NSButton buttonWithTitle:
@@ -106,6 +230,12 @@ static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
   startup.state = _setup.start_automatically ? NSControlStateValueOn
                                               : NSControlStateValueOff;
   [stack addArrangedSubview:startup];
+  NSPopUpButton *profile = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  [profile addItemsWithTitles:@[@"Controller Only", @"Pedal Enabled"]];
+  [profile selectItemAtIndex:_profile == MUSE_ON_PROFILE_PEDAL ? 1 : 0];
+  profile.target = self;
+  profile.action = @selector(changeProfile:);
+  [stack addArrangedSubview:profile];
   if ([[NSUserDefaults standardUserDefaults] boolForKey:kStartupApprovalRequiredKey]) {
     [stack addArrangedSubview:label(@"Start Automatically — Approval Required")];
   }
@@ -170,13 +300,33 @@ static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
     }
   }
   [self applyStartupPreference];
+  [self startListenerIfNeeded];
   [self refreshMenuWithCommand:MUSE_ON_COMMAND_ENABLE];
 }
 
 - (void)disable:(id)sender {
+  [self stopListener];
   muse_on_setup_state_disable(&_setup);
   [self saveSetup];
   [self refreshMenuWithCommand:MUSE_ON_COMMAND_DISABLE];
+}
+
+- (void)changeProfile:(NSPopUpButton *)sender {
+  MuseOnProfile next = sender.indexOfSelectedItem == 1
+      ? MUSE_ON_PROFILE_PEDAL : MUSE_ON_PROFILE_CONTROLLER_ONLY;
+  if (_profile == next) return;
+  /* SIGTERM invokes the listener's safe release/restoration path first. */
+  _profile = next;
+  [[NSUserDefaults standardUserDefaults] setObject:
+      (_profile == MUSE_ON_PROFILE_PEDAL ? @"pedal" : @"controller-only")
+                                         forKey:kControlProfileKey];
+  if (self.listenerTask) {
+    self.restartListenerAfterExit = YES;
+    [self.listenerTask terminate];
+  } else {
+    [self startListenerIfNeeded];
+  }
+  [self refreshMenu];
 }
 
 - (void)toggleStartup:(id)sender {
@@ -220,9 +370,11 @@ static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
   self.popover = [[NSPopover alloc] init];
   self.popover.behavior = NSPopoverBehaviorTransient;
   [self refreshMenu];
+  [self startListenerIfNeeded];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+  [self stopListener];
   if (self.lockFd >= 0) close(self.lockFd);
 }
 

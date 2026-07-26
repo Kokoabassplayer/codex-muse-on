@@ -14,6 +14,7 @@
 #include "muse_on_activation.h"
 #include "muse_on_action_map.h"
 #include "muse_on_config.h"
+#include "muse_on_connection.h"
 #include "muse_on_key_filter.h"
 #include "muse_on_platform.h"
 #include "muse_on_shortcut_map.h"
@@ -53,6 +54,7 @@ typedef struct DeviceSlot {
   CFIndex reportCapacity;
   MuseOnDecoder decoder;
   MuseOnActionRouter router;
+  bool neutralEntryReady;
   bool removed;
   struct DeviceSlot *next;
 } DeviceSlot;
@@ -214,12 +216,45 @@ static bool active_slot_at_location(const ListenerState *state,
   return false;
 }
 
+static bool validated_controller_location(const ListenerState *state,
+                                          uint32_t *locationID) {
+  const DeviceSlot *slot;
+  MuseOnObservedInterface *interfaces;
+  size_t count = 0;
+  size_t index = 0;
+  bool valid;
+
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (!slot->removed && (slot->kind == kInterfaceKeyboard ||
+                           slot->kind == kInterfaceJoystick)) count++;
+  }
+  if (count == 0) return false;
+  interfaces = calloc(count, sizeof(*interfaces));
+  if (!interfaces) return false;
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (slot->removed) continue;
+    if (slot->kind == kInterfaceKeyboard) {
+      interfaces[index++] = (MuseOnObservedInterface){
+          MUSE_ON_OBSERVED_KEYBOARD, slot->locationID, true};
+    } else if (slot->kind == kInterfaceJoystick) {
+      interfaces[index++] = (MuseOnObservedInterface){
+          MUSE_ON_OBSERVED_JOYSTICK, slot->locationID, true};
+    }
+  }
+  valid = muse_on_find_single_complete_controller(interfaces, index, locationID);
+  free(interfaces);
+  return valid;
+}
+
 static bool slot_matches_active_filter(const ListenerState *state,
                                        const DeviceSlot *slot) {
   uint64_t locationID;
+  uint32_t controllerLocation;
 
   if (!slot) return false;
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return true;
+  if (!validated_controller_location(state, &controllerLocation) ||
+      slot->locationID != controllerLocation) return false;
   locationID = muse_on_key_filter_location_id(state->keyFilter);
   return locationID != 0 && locationID <= UINT32_MAX &&
          slot->locationID == (uint32_t)locationID;
@@ -233,6 +268,7 @@ static void reset_slots(ListenerState *state, InterfaceKind kind,
     if (kind != kInterfaceUnknown && slot->kind != kind) continue;
     muse_on_decoder_init(&slot->decoder);
     muse_on_action_router_init(&slot->router, state->config.profile);
+    slot->neutralEntryReady = false;
     if (markRemoved) slot->removed = true;
   }
 }
@@ -361,14 +397,21 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
 static bool routing_is_enabled(ListenerState *state) {
   bool frontmost;
   bool captured;
+  uint32_t controllerLocation;
 
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return true;
+  if (!validated_controller_location(state, &controllerLocation)) return false;
+  for (DeviceSlot *slot = state->slots; slot; slot = slot->next) {
+    if (!slot->removed && slot->locationID == controllerLocation &&
+        !slot->neutralEntryReady) return false;
+  }
   frontmost = muse_on_codex_is_frontmost();
   captured = state->keyFilterApplied &&
              muse_on_key_filter_is_active(state->keyFilter) &&
              active_slot_at_location(
                  state, kInterfaceKeyboard,
-                 muse_on_key_filter_location_id(state->keyFilter));
+                 muse_on_key_filter_location_id(state->keyFilter)) &&
+             muse_on_key_filter_location_id(state->keyFilter) == controllerLocation;
   return muse_on_can_route_actions(state->config.mode, frontmost, captured);
 }
 
@@ -390,7 +433,6 @@ static void report_received(void *context, IOReturn result, void *sender,
   slot = find_slot(state, (IOHIDDeviceRef)sender);
   if (!slot || slot->removed || slot->kind != managerContext->kind) return;
   if (!slot_matches_active_filter(state, slot)) return;
-  if (!routing_is_enabled(state)) return;
   if (result != kIOReturnSuccess) {
     emit_error("input_report", result);
     return;
@@ -418,6 +460,38 @@ static void report_received(void *context, IOReturn result, void *sender,
   eventCount = muse_on_decode_report(
       &slot->decoder, interfaceKind, (uint8_t)reportID, report,
       (size_t)reportLength, events, MUSE_ON_MAX_EVENTS_PER_REPORT);
+  if (!slot->neutralEntryReady) {
+    bool hasHeldControl = false;
+    for (index = 0; index < eventCount; index++) {
+      switch (events[index].name) {
+        case MUSE_ON_EVENT_WHITE1_DOWN:
+        case MUSE_ON_EVENT_BLACK2_DOWN:
+        case MUSE_ON_EVENT_BLACK6_DOWN:
+        case MUSE_ON_EVENT_BLACK8_DOWN:
+        case MUSE_ON_EVENT_PEDAL_DOWN:
+        case MUSE_ON_EVENT_WHITE3_DOWN:
+        case MUSE_ON_EVENT_BLACK4_DOWN:
+        case MUSE_ON_EVENT_WHITE5_DOWN:
+        case MUSE_ON_EVENT_WHITE7_DOWN:
+        case MUSE_ON_EVENT_LEFT_BALL_NORTH_ENGAGED:
+        case MUSE_ON_EVENT_LEFT_BALL_SOUTH_ENGAGED:
+        case MUSE_ON_EVENT_RIGHT_BALL_VERTICAL_ENGAGED:
+        case MUSE_ON_EVENT_RIGHT_BALL_WEST_ENGAGED:
+        case MUSE_ON_EVENT_RIGHT_BALL_EAST_ENGAGED:
+        case MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED:
+        case MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED:
+          hasHeldControl = true;
+          break;
+        default:
+          break;
+      }
+      if (hasHeldControl) break;
+    }
+    if (hasHeldControl) return;
+    slot->neutralEntryReady = true;
+    return;
+  }
+  if (!routing_is_enabled(state)) return;
   for (index = 0; index < eventCount; index++) {
     MuseOnActionEvent action;
     if (muse_on_action_router_route(&slot->router, events[index].name,
@@ -427,17 +501,20 @@ static void report_received(void *context, IOReturn result, void *sender,
   }
 }
 
-static DeviceSlot *first_active_keyboard_slot(ListenerState *state) {
+static DeviceSlot *active_keyboard_slot_at_location(ListenerState *state,
+                                                     uint32_t locationID) {
   DeviceSlot *slot;
 
   for (slot = state->slots; slot; slot = slot->next) {
-    if (!slot->removed && slot->kind == kInterfaceKeyboard) return slot;
+    if (!slot->removed && slot->kind == kInterfaceKeyboard &&
+        slot->locationID == locationID) return slot;
   }
   return NULL;
 }
 
 static void activate_keyboard_filter(ListenerState *state, uint64_t nowNs,
                                      const char *reason);
+static void restore_keyboard_filter(ListenerState *state, const char *reason);
 
 static void device_added(void *context, IOReturn result, void *sender,
                          IOHIDDeviceRef device) {
@@ -483,6 +560,7 @@ static void device_added(void *context, IOReturn result, void *sender,
     slot->reportCapacity = (CFIndex)maxInputReportSize;
     muse_on_decoder_init(&slot->decoder);
     muse_on_action_router_init(&slot->router, state->config.profile);
+    slot->neutralEntryReady = false;
   } else {
     slot = calloc(1, sizeof(*slot));
     if (!slot) {
@@ -502,10 +580,14 @@ static void device_added(void *context, IOReturn result, void *sender,
   }
 
   emit_device_event("device_added", slot);
-  if (kind == kInterfaceKeyboard &&
-      state->config.mode != MUSE_ON_MODE_DRY_RUN &&
-      !state->keyFilterApplied) {
-    activate_keyboard_filter(state, monotonic_ns(), "keyboard_connected");
+  if (state->config.mode != MUSE_ON_MODE_DRY_RUN) {
+    uint32_t controllerLocation;
+    if (state->keyFilterApplied &&
+        !validated_controller_location(state, &controllerLocation)) {
+      restore_keyboard_filter(state, "controller_topology_changed");
+    } else if (!state->keyFilterApplied) {
+      activate_keyboard_filter(state, monotonic_ns(), "controller_connected");
+    }
   }
 }
 
@@ -527,6 +609,13 @@ static void device_removed(void *context, IOReturn result, void *sender,
 
   slot->removed = true;
   emit_device_event("device_removed", slot);
+  if (state->config.mode != MUSE_ON_MODE_DRY_RUN && state->keyFilterApplied) {
+    uint32_t controllerLocation;
+    if (!validated_controller_location(state, &controllerLocation)) {
+      restore_keyboard_filter(state, "controller_disconnected");
+      return;
+    }
+  }
   if (slot->kind == kInterfaceKeyboard &&
       slot->locationID == muse_on_key_filter_location_id(state->keyFilter) &&
       state->config.mode != MUSE_ON_MODE_DRY_RUN) {
@@ -573,6 +662,7 @@ static void activate_keyboard_filter(ListenerState *state,
                                      uint64_t nowNs,
                                      const char *reason) {
   DeviceSlot *keyboardSlot;
+  uint32_t controllerLocation;
 
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN ||
       state->keyFilterApplied || muse_on_key_filter_is_active(state->keyFilter)) {
@@ -585,7 +675,12 @@ static void activate_keyboard_filter(ListenerState *state,
     stopRequested = 1;
     return;
   }
-  keyboardSlot = first_active_keyboard_slot(state);
+  if (!validated_controller_location(state, &controllerLocation)) {
+    emit_capture_state(state, "filter_waiting", "controller_incomplete");
+    state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
+    return;
+  }
+  keyboardSlot = active_keyboard_slot_at_location(state, controllerLocation);
   if (!keyboardSlot) {
     emit_capture_state(state, "filter_waiting", "keyboard_unavailable");
     state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
@@ -613,6 +708,7 @@ static void activate_keyboard_filter(ListenerState *state,
 static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
   bool frontmost;
   bool wantFilter;
+  uint32_t controllerLocation;
 
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return;
   refresh_permission_state(state, nowNs);
@@ -629,7 +725,8 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
   }
 
   wantFilter = muse_on_should_filter_keyboard(state->config.mode) &&
-               filter_permissions_ready(state);
+               filter_permissions_ready(state) &&
+               validated_controller_location(state, &controllerLocation);
   if (!wantFilter && (state->keyFilterApplied ||
                       muse_on_key_filter_needs_restore(state->keyFilter))) {
     restore_keyboard_filter(state, "filter_not_requested");
