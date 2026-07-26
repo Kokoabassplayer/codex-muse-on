@@ -156,6 +156,8 @@ static void test_mapping_completeness_and_dispatch_parity(void) {
   }
 }
 
+static const MuseOnControlMapping *find_control(const char *identifier);
+
 static void test_action_display_names_are_user_facing(void) {
   assert(strcmp(muse_on_action_display_name(
                     MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE),
@@ -168,9 +170,121 @@ static void test_action_display_names_are_user_facing(void) {
                 "Open Model Picker") == 0);
 }
 
+static void test_profile_specific_interaction_wording(void) {
+  const MuseOnControlMapping *black8 = find_control("black8");
+  const MuseOnControlProfileMapping *controller_only =
+      muse_on_control_mapping_profile(black8, MUSE_ON_PROFILE_CONTROLLER_ONLY);
+  const MuseOnControlProfileMapping *pedal =
+      muse_on_control_mapping_profile(black8, MUSE_ON_PROFILE_PEDAL);
+
+  assert(black8 != NULL);
+  assert(strcmp(muse_on_action_phase_prompt(pedal->press_phase),
+                "Press to trigger") == 0);
+  assert(strcmp(muse_on_action_phase_prompt(controller_only->press_phase),
+                "Press and hold; release to stop") == 0);
+  assert(strcmp(muse_on_action_phase_prompt(controller_only->release_phase),
+                "Release to stop") == 0);
+}
+
+static const MuseOnControlMapping *find_control(const char *identifier) {
+  size_t index;
+
+  for (index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if (strcmp(mapping->identifier, identifier) == 0) return mapping;
+  }
+  return NULL;
+}
+
+static void test_variant_b_native_layout_relationships(void) {
+  const MuseOnControlMapping *turntable = find_control("turntable.clockwise");
+  const MuseOnControlMapping *white1 = find_control("white1");
+  const MuseOnControlMapping *white3 = find_control("white3");
+  const MuseOnControlMapping *white5 = find_control("white5");
+  const MuseOnControlMapping *white7 = find_control("white7");
+  const MuseOnControlMapping *black2 = find_control("black2");
+  const MuseOnControlMapping *black4 = find_control("black4");
+  const MuseOnControlMapping *black6 = find_control("black6");
+  const MuseOnControlMapping *black8 = find_control("black8");
+  const MuseOnControlMapping *left_north = find_control("leftBall.north");
+  const MuseOnControlMapping *left_south = find_control("leftBall.south");
+  const MuseOnControlMapping *right_vertical =
+      find_control("rightBall.vertical");
+  const MuseOnControlMapping *right_west = find_control("rightBall.west");
+  const MuseOnControlMapping *right_east = find_control("rightBall.east");
+  const MuseOnControlMapping *pedal = find_control("pedal");
+  const MuseOnControlMapping *white_keys[] = {white1, white3, white5, white7};
+  const MuseOnControlMapping *black_keys[] = {black2, black4, black6, black8};
+  size_t index;
+  float white_min_x = white1->x;
+  float white_max_x = white7->x + white7->width;
+  float white_min_y = white1->y;
+  float white_max_y = white1->y + white1->height;
+
+  assert(turntable != NULL && turntable->shape == MUSE_ON_CONTROL_SHAPE_TURNTABLE);
+  assert(turntable->x < white_min_x);
+  assert(turntable->width >= 0.23f && turntable->width <= 0.25f);
+  assert(turntable->height >= 0.48f && turntable->height <= 0.50f);
+  assert(strcmp(turntable->physical_label, turntable->identifier) != 0);
+
+  for (index = 0; index < sizeof(white_keys) / sizeof(white_keys[0]); index++) {
+    const MuseOnControlMapping *mapping = white_keys[index];
+    assert(mapping != NULL);
+    assert(mapping->group == MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS);
+    assert(mapping->shape == MUSE_ON_CONTROL_SHAPE_BUTTON);
+    assert(mapping->y == white_min_y);
+    assert(mapping->height == white1->height);
+    assert(index == 0 || mapping->x > white_keys[index - 1]->x);
+    assert(mapping->physical_label[0] == 'W');
+    assert(muse_on_action_display_name(mapping->profiles[0].press_action)[0] !=
+           '\0');
+  }
+  assert(white_max_y > white_min_y);
+
+  for (index = 0; index < sizeof(black_keys) / sizeof(black_keys[0]); index++) {
+    const MuseOnControlMapping *mapping = black_keys[index];
+    assert(mapping != NULL);
+    assert(mapping->group == MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS);
+    assert(mapping->shape == MUSE_ON_CONTROL_SHAPE_BUTTON);
+    assert(mapping->y < white_min_y);
+    assert(mapping->width <= white1->width);
+    assert(mapping->x > white_min_x && mapping->x < white_max_x);
+    assert(index == 0 || mapping->x > black_keys[index - 1]->x);
+    assert(mapping->physical_label[0] == 'B');
+  }
+  assert(black2->x > white1->x && black2->x < white3->x);
+  assert(black4->x > white3->x && black4->x < white5->x);
+  assert(black6->x > white5->x && black6->x < white7->x);
+  assert(black8->x > white7->x);
+
+  assert(left_north != NULL && left_south != NULL);
+  assert(left_north->x > turntable->x + turntable->width);
+  assert(left_south->x > turntable->x + turntable->width);
+  assert(left_north->x + left_north->width <= white_min_x + 0.01f);
+  assert(left_south->x + left_south->width <= white_min_x + 0.01f);
+  assert(left_south->y + left_south->height < white_min_y);
+  assert(left_north->y < left_south->y);
+
+  assert(right_vertical != NULL && right_west != NULL && right_east != NULL);
+  assert(right_vertical->x > white_max_x);
+  assert(right_west->x > white_max_x);
+  assert(right_east->x > white_max_x);
+  assert(right_vertical->y > white_min_y);
+  assert(right_west->y > white_min_y);
+  assert(right_east->y > white_min_y);
+
+  assert(pedal != NULL && pedal->shape == MUSE_ON_CONTROL_SHAPE_PEDAL);
+  assert(pedal->y > white_max_y);
+  assert(pedal->height >= 0.17f && pedal->height <= 0.18f);
+  assert(pedal->optional);
+  assert(strcmp(pedal->physical_label, "Optional pedal") == 0);
+}
+
 int main(void) {
   test_semantic_layout_groups();
   test_mapping_completeness_and_dispatch_parity();
   test_action_display_names_are_user_facing();
+  test_profile_specific_interaction_wording();
+  test_variant_b_native_layout_relationships();
   return 0;
 }

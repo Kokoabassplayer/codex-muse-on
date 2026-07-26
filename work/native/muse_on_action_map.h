@@ -116,6 +116,7 @@ const char *muse_on_profile_string(MuseOnProfile profile);
 const char *muse_on_action_id_string(MuseOnActionId action);
 const char *muse_on_action_display_name(MuseOnActionId action);
 const char *muse_on_action_phase_string(MuseOnActionPhase phase);
+const char *muse_on_action_phase_prompt(MuseOnActionPhase phase);
 const char *muse_on_event_name_string(MuseOnEventName event);
 
 size_t muse_on_control_mapping_count(void);

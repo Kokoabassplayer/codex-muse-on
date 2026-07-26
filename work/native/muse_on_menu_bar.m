@@ -37,20 +37,81 @@ static NSString *MuseOnProfileTitle(MuseOnProfile profile) {
                                           : @"Controller Only";
 }
 
+static NSString *MuseOnStringFromUTF8(const char *value) {
+  NSString *string = value ? [NSString stringWithUTF8String:value] : nil;
+  if (string) return string;
+  return @"Unknown control";
+}
+
+static NSString *MuseOnDefaultControlIdentifier(void) {
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if (strcmp(mapping->identifier, "black2") == 0) {
+      return MuseOnStringFromUTF8(mapping->identifier);
+    }
+  }
+  return MuseOnStringFromUTF8(
+      muse_on_control_mapping_at(0)->identifier);
+}
+
+static NSString *MuseOnControlDescription(const MuseOnControlMapping *mapping,
+                                           MuseOnProfile profile);
+
 static NSString *MuseOnControlText(const MuseOnControlMapping *mapping,
                                    MuseOnProfile profile) {
   const MuseOnControlProfileMapping *profile_mapping =
       muse_on_control_mapping_profile(mapping, profile);
-  NSString *physical = [NSString stringWithUTF8String:mapping->physical_label];
+  NSString *physical = MuseOnStringFromUTF8(mapping->physical_label);
 
   if (!profile_mapping || !profile_mapping->available) {
     return [NSString stringWithFormat:
-        @"%@ → Not active in %@; select Pedal Enabled to use it", physical,
+        @"%@ → Not active in %@; select Pedal Enabled to use it.", physical,
         MuseOnProfileTitle(profile)];
   }
-  return [NSString stringWithFormat:@"%@ → %s", physical,
+  return [NSString stringWithFormat:@"%@ → %s. %@", physical,
                                     muse_on_action_display_name(
-                                        profile_mapping->press_action)];
+                                        profile_mapping->press_action),
+                                    MuseOnControlDescription(mapping, profile)];
+}
+
+static NSString *MuseOnControlDescription(const MuseOnControlMapping *mapping,
+                                           MuseOnProfile profile) {
+  const MuseOnControlProfileMapping *profile_mapping =
+      muse_on_control_mapping_profile(mapping, profile);
+
+  if (!profile_mapping || !profile_mapping->available) {
+    return @"Available when Pedal Enabled is selected.";
+  }
+  NSString *identifier = MuseOnStringFromUTF8(mapping->identifier);
+  NSString *interaction = MuseOnStringFromUTF8(
+      muse_on_action_phase_prompt(profile_mapping->press_phase));
+  if ([identifier isEqualToString:@"black8"]) {
+    NSString *target = profile == MUSE_ON_PROFILE_PEDAL
+        ? @"the environment action" : @"Global Dictation";
+    return [NSString stringWithFormat:@"%@ %@.", interaction, target];
+  }
+  if ([identifier isEqualToString:@"pedal"]) {
+    return [NSString stringWithFormat:@"%@ Push-to-Talk.", interaction];
+  }
+  NSDictionary<NSString *, NSString *> *descriptions = @{
+      @"white1" : @"Switch to Fast Mode.",
+      @"white3" : @"Decline the current suggestion.",
+      @"white5" : @"Copy the conversation as Markdown.",
+      @"white7" : @"Open the review tab.",
+      @"black2" : @"Approve the current suggestion.",
+      @"black4" : @"Fork the current thread.",
+      @"black6" : @"Send the current composer message.",
+      @"leftBall.north" : @"Cycle to the previous thread.",
+      @"leftBall.south" : @"Cycle to the next thread.",
+      @"rightBall.vertical" : @"Open the model picker.",
+      @"rightBall.west" : @"Navigate back in history.",
+      @"rightBall.east" : @"Navigate forward in history.",
+      @"turntable.clockwise" : @"Decrease reasoning effort.",
+      @"turntable.counterclockwise" : @"Increase reasoning effort.",
+  };
+  NSString *description = descriptions[identifier];
+  if (description) return description;
+  return [NSString stringWithFormat:@"%@ this Codex action.", interaction];
 }
 
 static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
@@ -62,6 +123,8 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
 
 @interface MuseOnControllerMapCanvas : NSView
 @property(nonatomic) MuseOnProfile profile;
+@property(nonatomic, copy) NSString *selectedIdentifier;
+@property(nonatomic, copy) void (^selectionHandler)(NSString *identifier);
 - (instancetype)initWithProfile:(MuseOnProfile)profile;
 @end
 
@@ -73,9 +136,10 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
     _profile = profile;
     self.wantsLayer = YES;
     self.accessibilityRole = NSAccessibilityImageRole;
-    self.accessibilityLabel = @"Muse-On physical controller layout";
+    self.accessibilityLabel = @"Muse-On Control Map";
     self.accessibilityValue = [NSString stringWithFormat:
-        @"Selected profile: %@", MuseOnProfileTitle(profile)];
+        @"Selected profile: %@. Select a control below to inspect its action.",
+        MuseOnProfileTitle(profile)];
   }
   return self;
 }
@@ -85,12 +149,12 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
 }
 
 - (NSSize)intrinsicContentSize {
-  return NSMakeSize(700, 260);
+  return NSMakeSize(464, 229);
 }
 
 - (void)drawLabel:(NSString *)label
            atPoint:(NSPoint)point
-              font:(NSFont *)font
+           font:(NSFont *)font
              color:(NSColor *)color {
   [label drawAtPoint:point withAttributes:@{
     NSFontAttributeName : font,
@@ -98,136 +162,447 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
   }];
 }
 
+- (void)drawCenteredLabel:(NSString *)label
+                   inRect:(NSRect)rect
+                      font:(NSFont *)font
+                     color:(NSColor *)color {
+  NSSize labelSize = [label sizeWithAttributes:@{NSFontAttributeName : font}];
+  [self drawLabel:label
+          atPoint:NSMakePoint(NSMidX(rect) - labelSize.width / 2.0,
+                              NSMidY(rect) - labelSize.height / 2.0)
+             font:font
+            color:color];
+}
+
+- (BOOL)isSelectedMapping:(const MuseOnControlMapping *)mapping {
+  return self.selectedIdentifier != nil &&
+         [self.selectedIdentifier isEqualToString:
+              MuseOnStringFromUTF8(mapping->identifier)];
+}
+
+- (void)drawSelectionRingForRect:(NSRect)rect {
+  NSBezierPath *ring = [NSBezierPath bezierPathWithRoundedRect:
+      NSInsetRect(rect, -3, -3) xRadius:8 yRadius:8];
+  [[NSColor controlAccentColor] setStroke];
+  ring.lineWidth = 2.4;
+  [ring stroke];
+}
+
+- (void)drawSelectionRingForCircleInRect:(NSRect)rect {
+  NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:
+      NSInsetRect(rect, -3, -3)];
+  [[NSColor controlAccentColor] setStroke];
+  ring.lineWidth = 2.4;
+  [ring stroke];
+}
+
+- (void)drawTriangleWithTip:(NSPoint)tip
+                     baseOne:(NSPoint)baseOne
+                     baseTwo:(NSPoint)baseTwo
+                       color:(NSColor *)color {
+  NSBezierPath *triangle = [NSBezierPath bezierPath];
+  [triangle moveToPoint:tip];
+  [triangle lineToPoint:baseOne];
+  [triangle lineToPoint:baseTwo];
+  [triangle closePath];
+  [color setStroke];
+  triangle.lineWidth = 1.2;
+  [triangle stroke];
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;
   NSSize size = self.bounds.size;
-  NSRect panel = NSInsetRect(self.bounds, 1, 1);
-  NSBezierPath *panelPath = [NSBezierPath bezierPathWithRoundedRect:panel
-                                                              xRadius:12
-                                                              yRadius:12];
-  [[NSColor controlBackgroundColor] setFill];
-  [panelPath fill];
-  [[NSColor separatorColor] setStroke];
-  [panelPath stroke];
+  CGFloat scaleX = size.width / 450.0;
+  CGFloat scaleY = size.height / 222.0;
+  CGFloat scale = MIN(scaleX, scaleY);
+  NSColor *diagramTop = [NSColor colorWithCalibratedWhite:0.18 alpha:1.0];
+  NSColor *diagramBottom = [NSColor colorWithCalibratedWhite:0.12 alpha:1.0];
+  NSColor *bodyTop = [NSColor colorWithCalibratedWhite:0.21 alpha:1.0];
+  NSColor *bodyBottom = [NSColor colorWithCalibratedWhite:0.11 alpha:1.0];
+  NSColor *stroke = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
+  NSColor *faint = [NSColor colorWithCalibratedWhite:0.43 alpha:1.0];
+  NSColor *keyWhite = [NSColor colorWithCalibratedWhite:0.95 alpha:1.0];
+  NSColor *keyWhiteLabel = [NSColor colorWithCalibratedWhite:0.40 alpha:1.0];
+  NSColor *keyBlack = [NSColor colorWithCalibratedWhite:0.095 alpha:1.0];
 
-  [self drawLabel:@"MUSE-ON" atPoint:NSMakePoint(18, 12)
-              font:[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold]
-             color:[NSColor secondaryLabelColor]];
-  [self drawLabel:[NSString stringWithFormat:@"%@ profile",
-                                             MuseOnProfileTitle(_profile)]
-          atPoint:NSMakePoint(size.width - 145, 12)
-              font:[NSFont systemFontOfSize:11]
-             color:[NSColor secondaryLabelColor]];
+  NSRect diagram = NSInsetRect(self.bounds, 1, 1);
+  NSBezierPath *diagramPath = [NSBezierPath bezierPathWithRoundedRect:diagram
+                                                                  xRadius:13
+                                                                  yRadius:13];
+  NSGradient *diagramGradient = [[NSGradient alloc]
+      initWithStartingColor:diagramTop endingColor:diagramBottom];
+  [diagramGradient drawInBezierPath:diagramPath angle:90];
+  [stroke setStroke];
+  diagramPath.lineWidth = 1.0;
+  [diagramPath stroke];
 
-  NSRect turntable = NSMakeRect(0.045 * size.width, 0.20 * size.height,
-                                0.18 * size.width, 0.57 * size.height);
-  NSBezierPath *turntablePath = [NSBezierPath bezierPathWithOvalInRect:turntable];
-  [[NSColor controlColor] setFill];
-  [turntablePath fill];
-  [[NSColor separatorColor] setStroke];
-  [turntablePath stroke];
-  NSBezierPath *inner = [NSBezierPath bezierPathWithOvalInRect:
-      NSInsetRect(turntable, 15, 15)];
-  [[NSColor windowBackgroundColor] setFill];
-  [inner fill];
-  [[NSColor separatorColor] setStroke];
-  [inner stroke];
-  [self drawLabel:@"↺" atPoint:NSMakePoint(NSMinX(turntable) + 17,
-                                            NSMidY(turntable) - 13)
-              font:[NSFont systemFontOfSize:25]
-             color:[NSColor labelColor]];
-  [self drawLabel:@"↻" atPoint:NSMakePoint(NSMaxX(turntable) - 39,
-                                            NSMidY(turntable) - 13)
-              font:[NSFont systemFontOfSize:25]
-             color:[NSColor labelColor]];
-  [self drawLabel:@"TURNTABLE" atPoint:NSMakePoint(NSMinX(turntable) + 25,
-                                                   NSMaxY(turntable) + 8)
-              font:[NSFont systemFontOfSize:9 weight:NSFontWeightSemibold]
-             color:[NSColor secondaryLabelColor]];
+  NSRect body = NSMakeRect(8 * scaleX, 8 * scaleY, 434 * scaleX, 152 * scaleY);
+  NSBezierPath *bodyPath = [NSBezierPath bezierPathWithRoundedRect:body
+                                                              xRadius:18 * scale
+                                                              yRadius:18 * scale];
+  NSGradient *bodyGradient = [[NSGradient alloc]
+      initWithStartingColor:bodyTop endingColor:bodyBottom];
+  [bodyGradient drawInBezierPath:bodyPath angle:90];
+  [[NSColor colorWithCalibratedWhite:0.40 alpha:1.0] setStroke];
+  bodyPath.lineWidth = 1.0;
+  [bodyPath stroke];
+  NSBezierPath *bodyHighlight = [NSBezierPath bezierPathWithRoundedRect:
+      NSInsetRect(body, 1.5 * scale, 1.5 * scale)
+      xRadius:16.5 * scale yRadius:16.5 * scale];
+  [[NSColor colorWithCalibratedWhite:0.80 alpha:0.13] setStroke];
+  bodyHighlight.lineWidth = 1.0;
+  [bodyHighlight stroke];
 
-  size_t index;
-  size_t count = muse_on_control_mapping_count();
-  for (index = 0; index < count; index++) {
+  [self drawLabel:@"MUSE-ON"
+          atPoint:NSMakePoint(24 * scaleX, 147 * scaleY)
+              font:[NSFont systemFontOfSize:8 * scale weight:NSFontWeightSemibold]
+             color:[NSColor colorWithCalibratedWhite:0.65 alpha:1.0]];
+  [self drawLabel:@"BLACK KEYS"
+          atPoint:NSMakePoint(217 * scaleX, 35 * scaleY)
+              font:[NSFont systemFontOfSize:7 * scale weight:NSFontWeightSemibold]
+             color:faint];
+  [self drawLabel:@"WHITE KEYS"
+          atPoint:NSMakePoint(194 * scaleX, 83 * scaleY)
+              font:[NSFont systemFontOfSize:7 * scale weight:NSFontWeightSemibold]
+             color:faint];
+
+  NSPoint turntableCenter = NSMakePoint(84 * scaleX, 82 * scaleY);
+  CGFloat turntableRadius = 54 * scale;
+  NSRect turntable = NSMakeRect(turntableCenter.x - turntableRadius,
+                                turntableCenter.y - turntableRadius,
+                                turntableRadius * 2, turntableRadius * 2);
+  NSBezierPath *turntableBase = [NSBezierPath bezierPathWithOvalInRect:turntable];
+  [[NSColor colorWithCalibratedWhite:0.125 alpha:1.0] setFill];
+  [turntableBase fill];
+  [[NSColor colorWithCalibratedWhite:0.36 alpha:1.0] setStroke];
+  turntableBase.lineWidth = 1.2 * scale;
+  [turntableBase stroke];
+  NSRect grooveRect = NSInsetRect(turntable, 7 * scale, 7 * scale);
+  NSBezierPath *groove = [NSBezierPath bezierPathWithOvalInRect:grooveRect];
+  CGFloat grooveDashes[] = {1.5 * scale, 3 * scale};
+  [groove setLineDash:grooveDashes count:2 phase:0];
+  [[NSColor colorWithCalibratedWhite:0.25 alpha:1.0] setStroke];
+  groove.lineWidth = 1.8 * scale;
+  [groove stroke];
+  for (NSInteger ringInset = 16; ringInset <= 27; ringInset += 11) {
+    NSBezierPath *ringPath = [NSBezierPath bezierPathWithOvalInRect:
+        NSInsetRect(turntable, ringInset * scale, ringInset * scale)];
+    [[NSColor colorWithCalibratedWhite:0.47 alpha:0.72] setStroke];
+    ringPath.lineWidth = 1.0 * scale;
+    [ringPath stroke];
+  }
+  NSBezierPath *hub = [NSBezierPath bezierPathWithOvalInRect:
+      NSMakeRect(turntableCenter.x - 11 * scale, turntableCenter.y - 11 * scale,
+                 22 * scale, 22 * scale)];
+  [[NSColor colorWithCalibratedWhite:0.06 alpha:1.0] setFill];
+  [hub fill];
+  [[NSColor colorWithCalibratedWhite:0.46 alpha:1.0] setStroke];
+  hub.lineWidth = 1.0 * scale;
+  [hub stroke];
+  [[NSColor controlAccentColor] setFill];
+  NSBezierPath *turntableMark = [NSBezierPath bezierPathWithOvalInRect:
+      NSMakeRect(turntableCenter.x + 27.5 * scale,
+                 turntableCenter.y - 34.5 * scale, 7 * scale, 7 * scale)];
+  [turntableMark fill];
+  if ([self.selectedIdentifier hasPrefix:@"turntable."]) {
+    [self drawSelectionRingForCircleInRect:turntable];
+  }
+
+  /* White keys are painted first; black keys sit above them in the map. */
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
     const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if (mapping->group != MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS) continue;
     NSRect frame = MuseOnNormalizedRect(mapping, size);
-    NSString *shortLabel = nil;
-    NSColor *fill = nil;
-    NSColor *stroke = [NSColor separatorColor];
-
-    if (mapping->group == MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS) {
-      fill = [NSColor controlColor];
-      shortLabel = [NSString stringWithFormat:@"W%c", mapping->identifier[5]];
-    } else if (mapping->group == MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS) {
-      fill = [NSColor textColor];
-      shortLabel = [NSString stringWithFormat:@"B%c", mapping->identifier[5]];
-      stroke = [NSColor textColor];
-    } else if (mapping->group == MUSE_ON_CONTROL_GROUP_OPTIONAL_PEDAL) {
-      BOOL selected = muse_on_control_mapping_profile(mapping, _profile)->available;
-      fill = selected ? [NSColor controlAccentColor] : [NSColor controlColor];
-      shortLabel = selected ? @"PEDAL" : @"PEDAL (off)";
-    }
-    if (fill) {
-      NSBezierPath *button = [NSBezierPath bezierPathWithRoundedRect:frame
-                                                               xRadius:5
-                                                               yRadius:5];
-      [fill setFill];
-      [button fill];
-      [stroke setStroke];
-      [button stroke];
-      [self drawLabel:shortLabel
-              atPoint:NSMakePoint(NSMidX(frame) - 12, NSMidY(frame) - 6)
-                  font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-                 color:mapping->group == MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS
-                     ? [NSColor controlBackgroundColor] : [NSColor labelColor]];
-    }
+    NSBezierPath *key = [NSBezierPath bezierPathWithRoundedRect:frame
+                                                           xRadius:5 * scale
+                                                           yRadius:5 * scale];
+    [keyWhite setFill];
+    [key fill];
+    [[NSColor colorWithCalibratedWhite:0.73 alpha:1.0] setStroke];
+    key.lineWidth = 1.0 * scale;
+    [key stroke];
+    [self drawCenteredLabel:[NSString stringWithFormat:@"%c", mapping->identifier[5]]
+                    inRect:frame
+                       font:[NSFont systemFontOfSize:12 * scale
+                                               weight:NSFontWeightSemibold]
+                      color:keyWhiteLabel];
+    if ([self isSelectedMapping:mapping]) [self drawSelectionRingForRect:frame];
   }
 
-  NSPoint leftCenter = NSMakePoint(0.78 * size.width, 0.43 * size.height);
-  NSPoint rightCenter = NSMakePoint(0.90 * size.width, 0.43 * size.height);
-  for (NSValue *value in @[[NSValue valueWithPoint:leftCenter],
-                           [NSValue valueWithPoint:rightCenter]]) {
-    NSPoint center = value.pointValue;
-    NSRect ball = NSMakeRect(center.x - 28, center.y - 28, 56, 56);
-    NSBezierPath *ballPath = [NSBezierPath bezierPathWithOvalInRect:ball];
-    [[NSColor controlColor] setFill];
-    [ballPath fill];
-    [[NSColor separatorColor] setStroke];
-    [ballPath stroke];
-    NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:
-        NSMakeRect(center.x - 5, center.y - 5, 10, 10)];
-    [[NSColor controlAccentColor] setFill];
-    [dot fill];
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if (mapping->group != MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS) continue;
+    NSRect frame = MuseOnNormalizedRect(mapping, size);
+    NSBezierPath *key = [NSBezierPath bezierPathWithRoundedRect:frame
+                                                           xRadius:5 * scale
+                                                           yRadius:5 * scale];
+    [keyBlack setFill];
+    [key fill];
+    [[NSColor colorWithCalibratedWhite:0.29 alpha:1.0] setStroke];
+    key.lineWidth = 1.0 * scale;
+    [key stroke];
+    [self drawCenteredLabel:[NSString stringWithFormat:@"%c", mapping->identifier[5]]
+                    inRect:frame
+                       font:[NSFont systemFontOfSize:12 * scale
+                                               weight:NSFontWeightSemibold]
+                      color:[NSColor colorWithCalibratedWhite:0.66 alpha:1.0]];
+    if ([self isSelectedMapping:mapping]) [self drawSelectionRingForRect:frame];
   }
-  [self drawLabel:@"N" atPoint:NSMakePoint(leftCenter.x - 4, leftCenter.y - 50)
-              font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-             color:[NSColor labelColor]];
-  [self drawLabel:@"S" atPoint:NSMakePoint(leftCenter.x - 4, leftCenter.y + 35)
-              font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-             color:[NSColor labelColor]];
-  [self drawLabel:@"←  ↑  →" atPoint:NSMakePoint(rightCenter.x - 24,
-                                                     rightCenter.y + 38)
-              font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-             color:[NSColor labelColor]];
-  [self drawLabel:@"BALLS" atPoint:NSMakePoint(0.80 * size.width,
-                                                0.78 * size.height)
-              font:[NSFont systemFontOfSize:9 weight:NSFontWeightSemibold]
-             color:[NSColor secondaryLabelColor]];
+
+  NSPoint leftCenter = NSMakePoint(180 * scaleX, 58 * scaleY);
+  NSPoint rightCenter = NSMakePoint(405 * scaleX, 107 * scaleY);
+  CGFloat ballRadius = 15 * scale;
+  NSRect leftBall = NSMakeRect(leftCenter.x - ballRadius, leftCenter.y - ballRadius,
+                               ballRadius * 2, ballRadius * 2);
+  NSRect rightBall = NSMakeRect(rightCenter.x - ballRadius, rightCenter.y - ballRadius,
+                                ballRadius * 2, ballRadius * 2);
+  for (NSValue *value in @[[NSValue valueWithRect:leftBall],
+                           [NSValue valueWithRect:rightBall]]) {
+    NSRect ball = value.rectValue;
+    NSBezierPath *face = [NSBezierPath bezierPathWithOvalInRect:ball];
+    [[NSColor colorWithCalibratedWhite:0.145 alpha:1.0] setFill];
+    [face fill];
+    [[NSColor colorWithCalibratedWhite:0.41 alpha:1.0] setStroke];
+    face.lineWidth = 1.0 * scale;
+    [face stroke];
+    NSPoint center = NSMakePoint(NSMidX(ball), NSMidY(ball));
+    NSBezierPath *core = [NSBezierPath bezierPathWithOvalInRect:
+        NSMakeRect(center.x - 8.5 * scale, center.y - 8.5 * scale,
+                   17 * scale, 17 * scale)];
+    [[NSColor colorWithCalibratedWhite:0.067 alpha:1.0] setFill];
+    [core fill];
+    [[NSColor colorWithCalibratedWhite:0.52 alpha:1.0] setStroke];
+    core.lineWidth = 0.8 * scale;
+    [core stroke];
+  }
+  NSColor *activeGlyph = [NSColor colorWithCalibratedWhite:0.78 alpha:1.0];
+  NSColor *inactiveGlyph = [NSColor colorWithCalibratedWhite:0.30 alpha:1.0];
+  [self drawTriangleWithTip:NSMakePoint(leftCenter.x, leftCenter.y - 7 * scale)
+                    baseOne:NSMakePoint(leftCenter.x - 2.5 * scale,
+                                        leftCenter.y - 4 * scale)
+                    baseTwo:NSMakePoint(leftCenter.x + 2.5 * scale,
+                                        leftCenter.y - 4 * scale)
+                      color:activeGlyph];
+  [self drawTriangleWithTip:NSMakePoint(leftCenter.x, leftCenter.y + 7 * scale)
+                    baseOne:NSMakePoint(leftCenter.x - 2.5 * scale,
+                                        leftCenter.y + 4 * scale)
+                    baseTwo:NSMakePoint(leftCenter.x + 2.5 * scale,
+                                        leftCenter.y + 4 * scale)
+                      color:activeGlyph];
+  [self drawTriangleWithTip:NSMakePoint(leftCenter.x - 7 * scale, leftCenter.y)
+                    baseOne:NSMakePoint(leftCenter.x - 4 * scale,
+                                        leftCenter.y - 2.5 * scale)
+                    baseTwo:NSMakePoint(leftCenter.x - 4 * scale,
+                                        leftCenter.y + 2.5 * scale)
+                      color:inactiveGlyph];
+  [self drawTriangleWithTip:NSMakePoint(leftCenter.x + 7 * scale, leftCenter.y)
+                    baseOne:NSMakePoint(leftCenter.x + 4 * scale,
+                                        leftCenter.y - 2.5 * scale)
+                    baseTwo:NSMakePoint(leftCenter.x + 4 * scale,
+                                        leftCenter.y + 2.5 * scale)
+                      color:inactiveGlyph];
+  for (NSValue *value in @[
+           [NSValue valueWithPoint:NSMakePoint(0, -1)],
+           [NSValue valueWithPoint:NSMakePoint(0, 1)],
+           [NSValue valueWithPoint:NSMakePoint(-1, 0)],
+           [NSValue valueWithPoint:NSMakePoint(1, 0)]]) {
+    NSPoint direction = value.pointValue;
+    NSPoint tip = NSMakePoint(rightCenter.x + direction.x * 7 * scale,
+                              rightCenter.y + direction.y * 7 * scale);
+    NSPoint perpendicular = NSMakePoint(-direction.y * 2.5 * scale,
+                                         direction.x * 2.5 * scale);
+    [self drawTriangleWithTip:tip
+                      baseOne:NSMakePoint(rightCenter.x + direction.x * 4 * scale
+                                              + perpendicular.x,
+                                          rightCenter.y + direction.y * 4 * scale
+                                              + perpendicular.y)
+                      baseTwo:NSMakePoint(rightCenter.x + direction.x * 4 * scale
+                                              - perpendicular.x,
+                                          rightCenter.y + direction.y * 4 * scale
+                                              - perpendicular.y)
+                        color:activeGlyph];
+  }
+  if ([self.selectedIdentifier hasPrefix:@"leftBall."]) {
+    [self drawSelectionRingForCircleInRect:leftBall];
+  } else if ([self.selectedIdentifier hasPrefix:@"rightBall."]) {
+    [self drawSelectionRingForCircleInRect:rightBall];
+  }
+
+  CGFloat pedalCenterX = 225 * scaleX;
+  CGFloat pedalY = 179 * scaleY;
+  CGFloat pedalTopHalf = 42 * scaleX;
+  CGFloat pedalBottomHalf = 49 * scaleX;
+  CGFloat pedalBottomY = 218 * scaleY;
+  NSBezierPath *cable = [NSBezierPath bezierPath];
+  [cable moveToPoint:NSMakePoint(pedalCenterX, 160 * scaleY)];
+  [cable curveToPoint:NSMakePoint(pedalCenterX, pedalY)
+        controlPoint1:NSMakePoint(pedalCenterX, 168 * scaleY)
+        controlPoint2:NSMakePoint(pedalCenterX, 171 * scaleY)];
+  [[NSColor colorWithCalibratedWhite:0.44 alpha:1.0] setStroke];
+  cable.lineWidth = 2.0 * scale;
+  [cable stroke];
+  NSBezierPath *pedal = [NSBezierPath bezierPath];
+  [pedal moveToPoint:NSMakePoint(pedalCenterX - pedalTopHalf, pedalY)];
+  [pedal lineToPoint:NSMakePoint(pedalCenterX + pedalTopHalf, pedalY)];
+  [pedal lineToPoint:NSMakePoint(pedalCenterX + pedalBottomHalf, 211 * scaleY)];
+  [pedal curveToPoint:NSMakePoint(pedalCenterX - pedalBottomHalf, 211 * scaleY)
+        controlPoint1:NSMakePoint(pedalCenterX, pedalBottomY)
+        controlPoint2:NSMakePoint(pedalCenterX, pedalBottomY)];
+  [pedal closePath];
+  [[NSColor colorWithCalibratedWhite:0.16 alpha:1.0] setFill];
+  [pedal fill];
+  [[NSColor colorWithCalibratedWhite:0.47 alpha:1.0] setStroke];
+  pedal.lineWidth = 1.0 * scale;
+  [pedal stroke];
+  for (NSInteger tread = 8; tread <= 20; tread += 6) {
+    NSBezierPath *line = [NSBezierPath bezierPath];
+    CGFloat half = (28 + (tread - 8) * 1.0) * scaleX;
+    [line moveToPoint:NSMakePoint(pedalCenterX - half, (pedalY + tread * scaleY))];
+    [line lineToPoint:NSMakePoint(pedalCenterX + half, (pedalY + tread * scaleY))];
+    [[NSColor colorWithCalibratedWhite:0.47 alpha:0.6] setStroke];
+    line.lineWidth = 1.0 * scale;
+    [line stroke];
+  }
+  [self drawCenteredLabel:@"PEDAL"
+                  inRect:NSMakeRect(pedalCenterX - 35 * scaleX,
+                                    pedalY + 21 * scaleY, 70 * scaleX,
+                                    12 * scaleY)
+                     font:[NSFont systemFontOfSize:7 * scale
+                                             weight:NSFontWeightBold]
+                    color:[NSColor colorWithCalibratedWhite:0.82 alpha:1.0]];
+  const MuseOnControlMapping *pedalMapping = NULL;
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if (mapping->group == MUSE_ON_CONTROL_GROUP_OPTIONAL_PEDAL) {
+      pedalMapping = mapping;
+      break;
+    }
+  }
+  if (pedalMapping && [self isSelectedMapping:pedalMapping]) {
+    [[NSColor controlAccentColor] setStroke];
+    pedal.lineWidth = 2.4 * scale;
+    [pedal stroke];
+  }
+}
+
+- (BOOL)acceptsFirstResponder {
+  return YES;
+}
+
+- (BOOL)canBecomeKeyView {
+  return YES;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  const MuseOnControlMapping *selected = NULL;
+
+  /* Prefer the black keys when a click overlaps their white-key footprint. */
+  MuseOnControlGroup priority[] = {
+      MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
+      MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
+      MUSE_ON_CONTROL_GROUP_TURNTABLE,
+      MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+      MUSE_ON_CONTROL_GROUP_OPTIONAL_PEDAL};
+  for (size_t groupIndex = 0; groupIndex < sizeof(priority) / sizeof(priority[0]);
+       groupIndex++) {
+    for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+      const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+      if (mapping->group != priority[groupIndex] ||
+          !NSPointInRect(point, MuseOnNormalizedRect(mapping, self.bounds.size))) {
+        continue;
+      }
+      selected = mapping;
+      break;
+    }
+    if (selected) break;
+  }
+  if (selected && self.selectionHandler) {
+    self.selectionHandler(MuseOnStringFromUTF8(selected->identifier));
+  }
+}
+
+- (void)keyDown:(NSEvent *)event {
+  unsigned short keyCode = event.keyCode;
+  BOOL activatesSelection = keyCode == 36 || keyCode == 49;
+  if (activatesSelection && self.selectedIdentifier && self.selectionHandler) {
+    self.selectionHandler(self.selectedIdentifier);
+    return;
+  }
+  BOOL movesSelection = keyCode == 123 || keyCode == 124 || keyCode == 125 ||
+                        keyCode == 126;
+  if (!movesSelection || muse_on_control_mapping_count() == 0) {
+    [super keyDown:event];
+    return;
+  }
+  NSInteger currentIndex = -1;
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if ([self.selectedIdentifier isEqualToString:
+             MuseOnStringFromUTF8(mapping->identifier)]) {
+      currentIndex = (NSInteger)index;
+      break;
+    }
+  }
+  NSInteger next = currentIndex < 0 ? 0 : currentIndex;
+  if (keyCode == 123 || keyCode == 126) next--;
+  if (keyCode == 124 || keyCode == 125) next++;
+  if (next < 0) next = (NSInteger)muse_on_control_mapping_count() - 1;
+  if ((size_t)next >= muse_on_control_mapping_count()) next = 0;
+  const MuseOnControlMapping *mapping = muse_on_control_mapping_at((size_t)next);
+  if (self.selectionHandler) {
+    self.selectionHandler(MuseOnStringFromUTF8(mapping->identifier));
+  }
 }
 
 @end
 
+static NSString *MuseOnInspectorBadge(const MuseOnControlMapping *mapping) {
+  NSString *identifier = MuseOnStringFromUTF8(mapping->identifier);
+  if ([identifier hasPrefix:@"white"] || [identifier hasPrefix:@"black"]) {
+    return [identifier substringFromIndex:identifier.length - 1];
+  }
+  if ([identifier hasPrefix:@"turntable."]) return @"TT";
+  if ([identifier hasPrefix:@"leftBall."]) return @"LB";
+  if ([identifier hasPrefix:@"rightBall."]) return @"RB";
+  return @"P";
+}
+
 @interface MuseOnControllerMapView : NSView
-- (instancetype)initWithProfile:(MuseOnProfile)profile;
+@property(nonatomic, readonly) NSPopUpButton *selectionPopup;
+- (instancetype)initWithProfile:(MuseOnProfile)profile
+              selectedIdentifier:(NSString *)selectedIdentifier
+                selectionHandler:(void (^)(NSString *identifier))handler;
+- (void)selectIdentifier:(NSString *)identifier;
+@end
+
+@interface MuseOnControllerMapView ()
+@property(nonatomic) MuseOnProfile profile;
+@property(nonatomic, strong) MuseOnControllerMapCanvas *canvas;
+@property(nonatomic, strong) NSTextField *badgeField;
+@property(nonatomic, strong) NSTextField *physicalField;
+@property(nonatomic, strong) NSTextField *actionField;
+@property(nonatomic, strong) NSTextField *descriptionField;
+@property(nonatomic, strong) NSTextField *hintField;
+@property(nonatomic, copy) void (^selectionHandler)(NSString *identifier);
+@property(nonatomic, copy) NSString *selectedIdentifier;
 @end
 
 @implementation MuseOnControllerMapView
 
-- (instancetype)initWithProfile:(MuseOnProfile)profile {
-  self = [super initWithFrame:NSMakeRect(0, 0, 700, 620)];
+- (instancetype)initWithProfile:(MuseOnProfile)profile
+              selectedIdentifier:(NSString *)selectedIdentifier
+                selectionHandler:(void (^)(NSString *identifier))handler {
+  self = [super initWithFrame:NSMakeRect(0, 0, 464, 372)];
   if (!self) return nil;
+  _profile = profile;
+  _selectionHandler = [handler copy];
+  self.selectedIdentifier = selectedIdentifier;
   self.translatesAutoresizingMaskIntoConstraints = NO;
   self.accessibilityRole = NSAccessibilityGroupRole;
-  self.accessibilityLabel = @"Read-only Controller Map";
+  self.accessibilityLabel = @"Muse-On Control Map";
+  self.accessibilityValue = @"Visual map with a compact control inspector";
 
   NSStackView *stack = [NSStackView stackViewWithViews:@[]];
   stack.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -236,54 +611,91 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
   stack.translatesAutoresizingMaskIntoConstraints = NO;
   [self addSubview:stack];
 
-  MuseOnControllerMapCanvas *canvas =
-      [[MuseOnControllerMapCanvas alloc] initWithProfile:profile];
-  canvas.translatesAutoresizingMaskIntoConstraints = NO;
-  [stack addArrangedSubview:canvas];
-  [canvas.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [canvas.heightAnchor constraintEqualToConstant:260].active = YES;
+  self.canvas = [[MuseOnControllerMapCanvas alloc] initWithProfile:profile];
+  __weak MuseOnControllerMapView *weakSelf = self;
+  self.canvas.selectionHandler = ^(NSString *identifier) {
+    [weakSelf selectIdentifier:identifier];
+    if (weakSelf.selectionHandler) weakSelf.selectionHandler(identifier);
+  };
+  self.canvas.translatesAutoresizingMaskIntoConstraints = NO;
+  [stack addArrangedSubview:self.canvas];
+  [self.canvas.widthAnchor constraintEqualToConstant:464].active = YES;
+  [self.canvas.heightAnchor constraintEqualToConstant:229].active = YES;
 
-  NSTextField *equivalentTitle = [NSTextField labelWithString:
-      @"Complete text equivalent — physical control → Codex action"];
-  equivalentTitle.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
-  equivalentTitle.accessibilityLabel = equivalentTitle.stringValue;
-  [stack addArrangedSubview:equivalentTitle];
-
-  for (NSInteger groupValue = 0;
-       groupValue < MUSE_ON_CONTROL_GROUP_COUNT; groupValue++) {
-    MuseOnControlGroup group = (MuseOnControlGroup)groupValue;
-    NSStackView *groupStack = [NSStackView stackViewWithViews:@[]];
-    groupStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    groupStack.alignment = NSLayoutAttributeLeading;
-    groupStack.spacing = 2;
-    groupStack.accessibilityRole = NSAccessibilityGroupRole;
-    groupStack.accessibilityLabel = [NSString stringWithUTF8String:
-        muse_on_control_group_title(group)];
-    groupStack.translatesAutoresizingMaskIntoConstraints = NO;
-
-    NSTextField *heading = [NSTextField labelWithString:
-        [NSString stringWithFormat:@"%@", groupStack.accessibilityLabel]];
-    heading.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
-    heading.textColor = [NSColor secondaryLabelColor];
-    [groupStack addArrangedSubview:heading];
-
-    size_t count = muse_on_control_mapping_count();
-    for (size_t index = 0; index < count; index++) {
-      const MuseOnControlMapping *mapping =
-          muse_on_control_mapping_at(index);
-      if (mapping->group != group) continue;
-      NSTextField *row = [NSTextField labelWithString:
-          MuseOnControlText(mapping, profile)];
-      row.font = [NSFont systemFontOfSize:11];
-      row.accessibilityRole = NSAccessibilityStaticTextRole;
-      row.accessibilityLabel = row.stringValue;
-      row.lineBreakMode = NSLineBreakByWordWrapping;
-      row.usesSingleLineMode = NO;
-      row.preferredMaxLayoutWidth = 680;
-      [groupStack addArrangedSubview:row];
-    }
-    [stack addArrangedSubview:groupStack];
+  _selectionPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  self.selectionPopup.accessibilityLabel = @"Select a Muse-On physical control";
+  self.selectionPopup.accessibilityRole = NSAccessibilityPopUpButtonRole;
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    [self.selectionPopup addItemWithTitle:MuseOnStringFromUTF8(mapping->physical_label)];
   }
+  self.selectionPopup.target = self;
+  self.selectionPopup.action = @selector(selectionChanged:);
+  self.selectionPopup.hidden = YES;
+
+  NSBox *inspector = [[NSBox alloc] initWithFrame:NSZeroRect];
+  inspector.title = @"";
+  inspector.titleFont = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+  inspector.boxType = NSBoxCustom;
+  inspector.transparent = YES;
+  inspector.wantsLayer = YES;
+  inspector.layer.borderWidth = 1.0;
+  inspector.layer.borderColor = [NSColor separatorColor].CGColor;
+  inspector.layer.backgroundColor =
+      [NSColor colorWithCalibratedWhite:0.18 alpha:1.0].CGColor;
+  inspector.layer.cornerRadius = 8.0;
+  inspector.contentViewMargins = NSMakeSize(10, 7);
+  inspector.translatesAutoresizingMaskIntoConstraints = NO;
+  NSStackView *inspectorStack = [NSStackView stackViewWithViews:@[]];
+  inspectorStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  inspectorStack.alignment = NSLayoutAttributeLeading;
+  inspectorStack.spacing = 1;
+  inspectorStack.translatesAutoresizingMaskIntoConstraints = NO;
+  [inspector.contentView addSubview:inspectorStack];
+  self.badgeField = [NSTextField labelWithString:@""];
+  self.badgeField.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
+  self.badgeField.alignment = NSTextAlignmentCenter;
+  self.badgeField.textColor = [NSColor windowBackgroundColor];
+  self.badgeField.wantsLayer = YES;
+  self.badgeField.layer.backgroundColor = [NSColor labelColor].CGColor;
+  self.badgeField.layer.cornerRadius = 5.0;
+  [self.badgeField.widthAnchor constraintEqualToConstant:28].active = YES;
+  [self.badgeField.heightAnchor constraintEqualToConstant:22].active = YES;
+  self.actionField = [NSTextField labelWithString:@""];
+  self.actionField.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+  self.physicalField = [NSTextField labelWithString:@""];
+  self.physicalField.font = [NSFont systemFontOfSize:10];
+  self.physicalField.textColor = [NSColor secondaryLabelColor];
+  self.descriptionField = [NSTextField labelWithString:@""];
+  self.descriptionField.font = [NSFont systemFontOfSize:11];
+  self.descriptionField.textColor = [NSColor secondaryLabelColor];
+  self.hintField = [NSTextField labelWithString:
+      @"Click or focus any control above; press Enter or Space to inspect it."];
+  NSFontDescriptor *hintDescriptor = [[NSFont systemFontOfSize:10].fontDescriptor
+      fontDescriptorWithSymbolicTraits:NSFontItalicTrait];
+  self.hintField.font = [NSFont fontWithDescriptor:hintDescriptor size:10];
+  self.hintField.textColor = [NSColor tertiaryLabelColor];
+  NSStackView *inspectorHeader = [NSStackView stackViewWithViews:@[]];
+  inspectorHeader.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  inspectorHeader.alignment = NSLayoutAttributeCenterY;
+  inspectorHeader.spacing = 8;
+  [inspectorHeader addArrangedSubview:self.badgeField];
+  [inspectorHeader addArrangedSubview:self.actionField];
+  [inspectorStack addArrangedSubview:inspectorHeader];
+  for (NSTextField *field in @[self.physicalField, self.descriptionField,
+                               self.hintField]) {
+    field.accessibilityRole = NSAccessibilityStaticTextRole;
+    field.accessibilityLabel = field.stringValue;
+    [inspectorStack addArrangedSubview:field];
+  }
+  [NSLayoutConstraint activateConstraints:@[
+      [inspectorStack.leadingAnchor constraintEqualToAnchor:inspector.contentView.leadingAnchor],
+      [inspectorStack.trailingAnchor constraintEqualToAnchor:inspector.contentView.trailingAnchor],
+      [inspectorStack.topAnchor constraintEqualToAnchor:inspector.contentView.topAnchor],
+      [inspectorStack.bottomAnchor constraintEqualToAnchor:inspector.contentView.bottomAnchor],
+      [inspector.heightAnchor constraintEqualToConstant:88],
+  ]];
+  [stack addArrangedSubview:inspector];
 
   [NSLayoutConstraint activateConstraints:@[
       [stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
@@ -291,14 +703,179 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
       [stack.topAnchor constraintEqualToAnchor:self.topAnchor],
       [stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
   ]];
+
+  NSString *initialIdentifier = selectedIdentifier;
+  if (!initialIdentifier) {
+    initialIdentifier = MuseOnStringFromUTF8(
+        muse_on_control_mapping_at(0)->identifier);
+  }
+  [self selectIdentifier:initialIdentifier];
   return self;
+}
+
+- (void)selectionChanged:(NSPopUpButton *)sender {
+  NSInteger index = sender.indexOfSelectedItem;
+  if (index < 0 || (size_t)index >= muse_on_control_mapping_count()) return;
+  const MuseOnControlMapping *mapping = muse_on_control_mapping_at((size_t)index);
+  [self selectIdentifier:MuseOnStringFromUTF8(mapping->identifier)];
+  if (self.selectionHandler) self.selectionHandler(self.selectedIdentifier);
+}
+
+- (void)selectIdentifier:(NSString *)identifier {
+  const MuseOnControlMapping *selected = NULL;
+  size_t selectedIndex = 0;
+  for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+    if ([identifier isEqualToString:MuseOnStringFromUTF8(mapping->identifier)]) {
+      selected = mapping;
+      selectedIndex = index;
+      break;
+    }
+  }
+  if (!selected) {
+    selected = muse_on_control_mapping_at(0);
+    selectedIndex = 0;
+  }
+  self.selectedIdentifier = MuseOnStringFromUTF8(selected->identifier);
+  [self.selectionPopup selectItemAtIndex:(NSInteger)selectedIndex];
+  self.canvas.selectedIdentifier = self.selectedIdentifier;
+  self.canvas.accessibilityValue = [NSString stringWithFormat:
+      @"Selected %@. %@. %@ Use arrow keys to move between controls.",
+      MuseOnStringFromUTF8(selected->physical_label),
+      muse_on_control_mapping_profile(selected, self.profile)->available
+          ? MuseOnStringFromUTF8(muse_on_action_display_name(
+                muse_on_control_mapping_profile(selected, self.profile)->press_action))
+          : @"Not active in selected profile.",
+      MuseOnControlDescription(selected, self.profile)];
+  self.badgeField.stringValue = MuseOnInspectorBadge(selected);
+  self.physicalField.stringValue = MuseOnStringFromUTF8(selected->physical_label);
+  self.actionField.stringValue = [NSString stringWithFormat:@"%s",
+      muse_on_control_mapping_profile(selected, self.profile)->available
+          ? muse_on_action_display_name(
+                muse_on_control_mapping_profile(selected, self.profile)->press_action)
+          : "Not active in selected profile"];
+  self.descriptionField.stringValue = MuseOnControlDescription(selected, self.profile);
+  self.badgeField.accessibilityLabel = [NSString stringWithFormat:
+      @"Selected control %@", self.badgeField.stringValue];
+  self.hintField.accessibilityLabel = self.hintField.stringValue;
+  for (NSTextField *field in @[self.physicalField, self.actionField,
+                               self.descriptionField, self.hintField]) {
+    field.accessibilityLabel = field.stringValue;
+  }
+  self.canvas.needsDisplay = YES;
 }
 
 @end
 
+static NSStackView *MuseOnStatusIndicator(NSString *text, NSColor *color) {
+  NSView *dot = [[NSView alloc] initWithFrame:NSZeroRect];
+  dot.translatesAutoresizingMaskIntoConstraints = NO;
+  dot.wantsLayer = YES;
+  dot.layer.backgroundColor = color.CGColor;
+  dot.layer.cornerRadius = 3.5;
+  [dot.widthAnchor constraintEqualToConstant:7].active = YES;
+  [dot.heightAnchor constraintEqualToConstant:7].active = YES;
+  NSTextField *label = [NSTextField labelWithString:text];
+  label.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+  label.accessibilityRole = NSAccessibilityStaticTextRole;
+  label.accessibilityLabel = text;
+  NSStackView *indicator = [NSStackView stackViewWithViews:@[dot, label]];
+  indicator.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  indicator.alignment = NSLayoutAttributeCenterY;
+  indicator.spacing = 5;
+  indicator.accessibilityRole = NSAccessibilityStaticTextRole;
+  indicator.accessibilityLabel = text;
+  return indicator;
+}
+
+static NSBox *MuseOnPresentationCard(NSSize margins) {
+  NSBox *card = [[NSBox alloc] initWithFrame:NSZeroRect];
+  card.boxType = NSBoxCustom;
+  card.transparent = YES;
+  card.wantsLayer = YES;
+  card.layer.backgroundColor =
+      [NSColor colorWithCalibratedWhite:0.18 alpha:1.0].CGColor;
+  card.layer.borderColor =
+      [NSColor colorWithCalibratedWhite:0.29 alpha:1.0].CGColor;
+  card.layer.borderWidth = 0.5;
+  card.layer.cornerRadius = 9.0;
+  card.contentViewMargins = margins;
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  return card;
+}
+
+@interface MuseOnFlippedDocumentView : NSView
+@end
+
+@implementation MuseOnFlippedDocumentView
+
+- (BOOL)isFlipped {
+  return YES;
+}
+
+@end
+
+static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
+                                                     BOOL expanded) {
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.hasVerticalScroller = YES;
+  scroll.hasHorizontalScroller = NO;
+  scroll.autohidesScrollers = YES;
+  scroll.drawsBackground = NO;
+  scroll.borderType = NSNoBorder;
+  scroll.accessibilityLabel = @"Complete text equivalent for Control Map";
+  scroll.hidden = !expanded;
+  [scroll.heightAnchor constraintEqualToConstant:148].active = YES;
+  [scroll.widthAnchor constraintEqualToConstant:464].active = YES;
+
+  NSView *document = [[MuseOnFlippedDocumentView alloc]
+      initWithFrame:NSMakeRect(0, 0, 464, 420)];
+  NSStackView *content = [NSStackView stackViewWithViews:@[]];
+  content.orientation = NSUserInterfaceLayoutOrientationVertical;
+  content.alignment = NSLayoutAttributeLeading;
+  content.spacing = 4;
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  [document addSubview:content];
+
+  for (NSInteger groupValue = 0;
+       groupValue < MUSE_ON_CONTROL_GROUP_COUNT; groupValue++) {
+    MuseOnControlGroup group = (MuseOnControlGroup)groupValue;
+    NSTextField *heading = [NSTextField labelWithString:MuseOnStringFromUTF8(
+        muse_on_control_group_title(group))];
+    heading.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+    heading.textColor = [NSColor secondaryLabelColor];
+    heading.accessibilityRole = NSAccessibilityStaticTextRole;
+    [content addArrangedSubview:heading];
+
+    for (size_t index = 0; index < muse_on_control_mapping_count(); index++) {
+      const MuseOnControlMapping *mapping = muse_on_control_mapping_at(index);
+      if (mapping->group != group) continue;
+      NSTextField *row = [NSTextField labelWithString:MuseOnControlText(mapping,
+                                                                         profile)];
+      row.font = [NSFont systemFontOfSize:10];
+      row.textColor = [NSColor labelColor];
+      row.accessibilityRole = NSAccessibilityStaticTextRole;
+      row.accessibilityLabel = row.stringValue;
+      row.lineBreakMode = NSLineBreakByTruncatingTail;
+      row.preferredMaxLayoutWidth = 450;
+      [content addArrangedSubview:row];
+    }
+  }
+
+  [NSLayoutConstraint activateConstraints:@[
+      [content.leadingAnchor constraintEqualToAnchor:document.leadingAnchor],
+      [content.trailingAnchor constraintEqualToAnchor:document.trailingAnchor],
+      [content.topAnchor constraintEqualToAnchor:document.topAnchor],
+  ]];
+  scroll.documentView = document;
+  return scroll;
+}
+
 @interface MuseOnAppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSPopover *popover;
+@property(nonatomic, strong) MuseOnControllerMapView *controllerMapView;
 @property(nonatomic, strong) NSTask *listenerTask;
 @property(nonatomic, strong) NSFileHandle *listenerOutputHandle;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *interfaces;
@@ -325,6 +902,8 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
 @property(nonatomic) MuseOnSetupState setup;
 @property(nonatomic) MuseOnState coordinator;
 @property(nonatomic) MuseOnProfile profile;
+@property(nonatomic, copy) NSString *selectedControlIdentifier;
+@property(nonatomic) BOOL textEquivalentExpanded;
 @property(nonatomic) int lockFd;
 - (void)applyCoordinatorCommand:(MuseOnCommand)command
                cleanupVerified:(BOOL)cleanupVerified
@@ -916,20 +1495,46 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
                  safetyFailure:self.listenerSafetyFailure];
 }
 
-- (NSString *)controlStatusText {
-  if (_coordinator.status == MUSE_ON_STATUS_DISABLED) return @"Control: Disabled";
-  if (_coordinator.status == MUSE_ON_STATUS_ACTIVE) return @"Control: Active";
-  if (_coordinator.status == MUSE_ON_STATUS_SAFETY_LATCH) {
-    if (_coordinator.disable_pending) {
-      return @"Control: Inactive — Safety latch — Disable Pending";
-    }
-    return [NSString stringWithFormat:@"Control: Inactive — Safety latch — %s",
-                                      muse_on_safety_failure_string(
-                                          _coordinator.safety_failure)];
+- (NSString *)controlStateTitle {
+  switch (_coordinator.status) {
+    case MUSE_ON_STATUS_ACTIVE: return @"Active";
+    case MUSE_ON_STATUS_INACTIVE: return @"Inactive";
+    case MUSE_ON_STATUS_SAFETY_LATCH: return @"Safety";
+    case MUSE_ON_STATUS_DISABLED: return @"Disabled";
   }
-  return [NSString stringWithFormat:@"Control: Inactive — %s",
-                                    muse_on_inactive_reason_string(
-                                        _coordinator.inactive_reason)];
+  return @"Inactive";
+}
+
+- (NSString *)controlReasonText {
+  switch (_coordinator.status) {
+    case MUSE_ON_STATUS_ACTIVE:
+      return _profile == MUSE_ON_PROFILE_PEDAL
+          ? @"Pedal enabled — foot pedal is Push-to-Talk."
+          : @"Controller Only mode.";
+    case MUSE_ON_STATUS_DISABLED:
+      return @"Disabled by choice.";
+    case MUSE_ON_STATUS_SAFETY_LATCH:
+      if (_coordinator.disable_pending) {
+        return @"Disable pending; cleanup must be verified.";
+      }
+      return [NSString stringWithFormat:@"Safety latch — %s",
+                                        muse_on_safety_failure_string(
+                                            _coordinator.safety_failure)];
+    case MUSE_ON_STATUS_INACTIVE:
+      return [NSString stringWithUTF8String:muse_on_inactive_reason_string(
+          _coordinator.inactive_reason)];
+  }
+  return @"Control is unavailable.";
+}
+
+- (NSColor *)controlStateColor {
+  switch (_coordinator.status) {
+    case MUSE_ON_STATUS_ACTIVE: return [NSColor systemGreenColor];
+    case MUSE_ON_STATUS_SAFETY_LATCH: return [NSColor systemOrangeColor];
+    case MUSE_ON_STATUS_INACTIVE: return [NSColor systemYellowColor];
+    case MUSE_ON_STATUS_DISABLED: return [NSColor secondarySystemFillColor];
+  }
+  return [NSColor secondarySystemFillColor];
 }
 
 - (void)refreshStatusIcon {
@@ -986,7 +1591,7 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
   NSStackView *stack = [NSStackView stackViewWithViews:@[]];
   stack.orientation = NSUserInterfaceLayoutOrientationVertical;
   stack.alignment = NSLayoutAttributeLeading;
-  stack.spacing = 10;
+  stack.spacing = 7;
   stack.translatesAutoresizingMaskIntoConstraints = NO;
 
   NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *text) {
@@ -995,76 +1600,209 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
     field.accessibilityLabel = text;
     return field;
   };
-  [stack addArrangedSubview:label(self.controllerConnected
-      ? @"Muse-On: Connected" : @"Muse-On: Disconnected")];
-  [stack addArrangedSubview:label([self controlStatusText])];
 
-  NSString *controlTitle = _coordinator.disable_pending
-      ? @"Disable Pending"
-      : (_setup.enabled ? @"Disable Codex Muse-On" : @"Enable Codex Muse-On…");
-  NSButton *controlButton = [NSButton buttonWithTitle:controlTitle
-                                                target:self
-                                                action:(_setup.enabled ? @selector(disable:)
-                                                                      : @selector(enable:))];
-  controlButton.enabled = !_coordinator.disable_pending;
-  controlButton.accessibilityLabel = controlTitle;
-  [stack addArrangedSubview:controlButton];
+  NSStackView *titleRow = [NSStackView stackViewWithViews:@[]];
+  titleRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  titleRow.alignment = NSLayoutAttributeTop;
+  titleRow.spacing = 10;
+  NSTextField *logo = label(@"M");
+  logo.font = [NSFont systemFontOfSize:20 weight:NSFontWeightBold];
+  logo.alignment = NSTextAlignmentCenter;
+  logo.textColor = [NSColor whiteColor];
+  logo.wantsLayer = YES;
+  logo.layer.backgroundColor = [NSColor controlAccentColor].CGColor;
+  logo.layer.cornerRadius = 10.0;
+  [logo.widthAnchor constraintEqualToConstant:42].active = YES;
+  [logo.heightAnchor constraintEqualToConstant:42].active = YES;
+  logo.accessibilityLabel = @"Codex Muse-On";
+  [titleRow addArrangedSubview:logo];
+  NSStackView *titles = [NSStackView stackViewWithViews:@[]];
+  titles.orientation = NSUserInterfaceLayoutOrientationVertical;
+  titles.alignment = NSLayoutAttributeLeading;
+  titles.spacing = 5;
+  NSTextField *title = label(@"Codex Muse-On");
+  title.font = [NSFont systemFontOfSize:18 weight:NSFontWeightBold];
+  [titles addArrangedSubview:title];
+  NSBox *statusCard = MuseOnPresentationCard(NSMakeSize(9, 6));
+  NSStackView *statusStack = [NSStackView stackViewWithViews:@[]];
+  statusStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  statusStack.alignment = NSLayoutAttributeLeading;
+  statusStack.spacing = 3;
+  NSStackView *statusRow = [NSStackView stackViewWithViews:@[
+      MuseOnStatusIndicator(
+          self.controllerConnected ? @"Muse-On Connected" : @"Muse-On Disconnected",
+          self.controllerConnected ? [NSColor systemGreenColor]
+                                    : [NSColor tertiaryLabelColor]),
+      MuseOnStatusIndicator([NSString stringWithFormat:@"Control %@",
+                                                   [self controlStateTitle]],
+                            [self controlStateColor])]];
+  statusRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  statusRow.alignment = NSLayoutAttributeCenterY;
+  statusRow.distribution = NSStackViewDistributionFillEqually;
+  statusRow.spacing = 12;
+  [statusStack addArrangedSubview:statusRow];
+  NSTextField *reason = label([self controlReasonText]);
+  reason.font = [NSFont systemFontOfSize:10.5];
+  reason.textColor = [NSColor tertiaryLabelColor];
+  [statusStack addArrangedSubview:reason];
+  [statusCard.contentView addSubview:statusStack];
+  statusStack.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+      [statusStack.leadingAnchor constraintEqualToAnchor:statusCard.contentView.leadingAnchor],
+      [statusStack.trailingAnchor constraintEqualToAnchor:statusCard.contentView.trailingAnchor],
+      [statusStack.topAnchor constraintEqualToAnchor:statusCard.contentView.topAnchor],
+      [statusStack.bottomAnchor constraintEqualToAnchor:statusCard.contentView.bottomAnchor],
+  ]];
+  [titles addArrangedSubview:statusCard];
+  [titleRow addArrangedSubview:titles];
+  [titleRow.widthAnchor constraintEqualToConstant:464].active = YES;
+  [titles.widthAnchor constraintEqualToConstant:412].active = YES;
+  [statusCard.widthAnchor constraintEqualToConstant:412].active = YES;
+  [stack addArrangedSubview:titleRow];
 
+  NSTextField *mapTitle = label(@"Control Map");
+  mapTitle.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+  [stack addArrangedSubview:mapTitle];
+
+  if (!self.selectedControlIdentifier) {
+    self.selectedControlIdentifier = MuseOnDefaultControlIdentifier();
+  }
+  MuseOnControllerMapView *mapView = [[MuseOnControllerMapView alloc]
+      initWithProfile:_profile
+      selectedIdentifier:self.selectedControlIdentifier
+      selectionHandler:^(NSString *identifier) {
+        self.selectedControlIdentifier = identifier;
+      }];
+  self.controllerMapView = mapView;
+  [stack addArrangedSubview:mapView];
+  [mapView.widthAnchor constraintEqualToConstant:464].active = YES;
+  [mapView.heightAnchor constraintEqualToConstant:324].active = YES;
+
+  NSButton *textEquivalent = [NSButton buttonWithTitle:@""
+                                                 target:self
+                                                 action:@selector(toggleTextEquivalent:)];
+  [textEquivalent setButtonType:NSButtonTypePushOnPushOff];
+  textEquivalent.bezelStyle = NSBezelStyleDisclosure;
+  textEquivalent.state = self.textEquivalentExpanded ? NSControlStateValueOn
+                                                       : NSControlStateValueOff;
+  textEquivalent.accessibilityLabel = @"Complete text equivalent for Control Map";
+  textEquivalent.accessibilityValue = self.textEquivalentExpanded ? @"Expanded"
+                                                                    : @"Collapsed";
+  [textEquivalent.widthAnchor constraintEqualToConstant:16].active = YES;
+  NSStackView *textEquivalentRow = [NSStackView stackViewWithViews:@[]];
+  textEquivalentRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  textEquivalentRow.alignment = NSLayoutAttributeCenterY;
+  textEquivalentRow.spacing = 4;
+  [textEquivalentRow addArrangedSubview:textEquivalent];
+  NSTextField *textEquivalentLabel = label(@"Accessible text equivalent");
+  textEquivalentLabel.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+  [textEquivalentRow addArrangedSubview:textEquivalentLabel];
+  [stack addArrangedSubview:textEquivalentRow];
+  NSScrollView *textScroll = MuseOnTextEquivalentScrollView(
+      _profile, self.textEquivalentExpanded);
+  [stack addArrangedSubview:textScroll];
+
+  NSBox *controlCard = MuseOnPresentationCard(NSMakeSize(10, 7));
+  NSStackView *controlRow = [NSStackView stackViewWithViews:@[]];
+  controlRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  controlRow.alignment = NSLayoutAttributeCenterY;
+  controlRow.spacing = 8;
+  NSTextField *controlLabel = label(@"Muse-On");
+  controlLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+  [controlRow addArrangedSubview:controlLabel];
+  NSView *controlSpacer = [[NSView alloc] initWithFrame:NSZeroRect];
+  [controlRow addArrangedSubview:controlSpacer];
+  NSSegmentedControl *enabledControl =
+      [[NSSegmentedControl alloc] initWithFrame:NSZeroRect];
+  enabledControl.segmentCount = 2;
+  [enabledControl setLabel:@"Disabled" forSegment:0];
+  [enabledControl setLabel:@"Enabled" forSegment:1];
+  enabledControl.trackingMode = NSSegmentSwitchTrackingSelectOne;
+  enabledControl.segmentStyle = NSSegmentStyleRounded;
+  enabledControl.selectedSegment = _setup.enabled ? 1 : 0;
+  enabledControl.target = self;
+  enabledControl.action = @selector(toggleEnabled:);
+  enabledControl.accessibilityLabel = @"Codex Muse-On control state";
+  enabledControl.accessibilityRole = NSAccessibilityRadioGroupRole;
+  enabledControl.enabled = !_coordinator.disable_pending;
+  [controlRow addArrangedSubview:enabledControl];
+  [enabledControl.widthAnchor constraintEqualToConstant:146].active = YES;
+  [controlCard.contentView addSubview:controlRow];
+  controlRow.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+      [controlRow.leadingAnchor constraintEqualToAnchor:controlCard.contentView.leadingAnchor],
+      [controlRow.trailingAnchor constraintEqualToAnchor:controlCard.contentView.trailingAnchor],
+      [controlRow.topAnchor constraintEqualToAnchor:controlCard.contentView.topAnchor],
+      [controlRow.bottomAnchor constraintEqualToAnchor:controlCard.contentView.bottomAnchor],
+  ]];
+  [stack addArrangedSubview:controlCard];
+
+  NSBox *profileCard = MuseOnPresentationCard(NSMakeSize(3, 3));
   NSStackView *profileRow = [NSStackView stackViewWithViews:@[]];
   profileRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   profileRow.alignment = NSLayoutAttributeCenterY;
-  profileRow.spacing = 8;
-  NSTextField *profileLabel = label(@"Control Profile");
-  [profileRow addArrangedSubview:profileLabel];
-  NSPopUpButton *profile = [[NSPopUpButton alloc] initWithFrame:NSZeroRect
-                                                      pullsDown:NO];
-  [profile addItemsWithTitles:@[@"Controller Only", @"Pedal Enabled"]];
-  [profile selectItemAtIndex:_profile == MUSE_ON_PROFILE_PEDAL ? 1 : 0];
+  profileRow.spacing = 0;
+  NSSegmentedControl *profile = [[NSSegmentedControl alloc] initWithFrame:NSZeroRect];
+  profile.segmentCount = 2;
+  [profile setLabel:@"Controller Only" forSegment:0];
+  [profile setLabel:@"Pedal Enabled" forSegment:1];
+  profile.trackingMode = NSSegmentSwitchTrackingSelectOne;
+  profile.segmentStyle = NSSegmentStyleRounded;
+  profile.selectedSegment = _profile == MUSE_ON_PROFILE_PEDAL ? 1 : 0;
   profile.target = self;
   profile.action = @selector(changeProfile:);
   profile.accessibilityLabel = @"Control Profile";
-  profile.accessibilityRole = NSAccessibilityPopUpButtonRole;
+  profile.accessibilityRole = NSAccessibilityRadioGroupRole;
   [profileRow addArrangedSubview:profile];
-  [stack addArrangedSubview:profileRow];
+  [profile.widthAnchor constraintEqualToConstant:456].active = YES;
+  [profileCard.contentView addSubview:profileRow];
+  profileRow.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+      [profileRow.leadingAnchor constraintEqualToAnchor:profileCard.contentView.leadingAnchor],
+      [profileRow.trailingAnchor constraintEqualToAnchor:profileCard.contentView.trailingAnchor],
+      [profileRow.topAnchor constraintEqualToAnchor:profileCard.contentView.topAnchor],
+      [profileRow.bottomAnchor constraintEqualToAnchor:profileCard.contentView.bottomAnchor],
+  ]];
+  [stack addArrangedSubview:profileCard];
 
-  NSTextField *mapTitle = label([NSString stringWithFormat:
-      @"Controller Map — %@ (read-only)", MuseOnProfileTitle(_profile)]);
-  mapTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-  [stack addArrangedSubview:mapTitle];
-
-  MuseOnControllerMapView *mapView =
-      [[MuseOnControllerMapView alloc] initWithProfile:_profile];
-  mapView.frame = NSMakeRect(0, 0, 728, 620);
-  mapView.autoresizingMask = NSViewWidthSizable;
-  NSScrollView *mapScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-  mapScroll.hasVerticalScroller = YES;
-  mapScroll.hasHorizontalScroller = NO;
-  mapScroll.autohidesScrollers = YES;
-  mapScroll.drawsBackground = NO;
-  mapScroll.borderType = NSNoBorder;
-  mapScroll.accessibilityLabel = @"Controller Map text equivalent";
-  mapScroll.documentView = mapView;
-  mapScroll.translatesAutoresizingMaskIntoConstraints = NO;
-  [mapScroll.widthAnchor constraintEqualToConstant:728].active = YES;
-  [mapScroll.heightAnchor constraintEqualToConstant:390].active = YES;
-  [stack addArrangedSubview:mapScroll];
-
-  NSButton *startup = [NSButton checkboxWithTitle:@"Start Automatically"
+  NSBox *startupCard = MuseOnPresentationCard(NSMakeSize(10, 7));
+  NSStackView *startupRow = [NSStackView stackViewWithViews:@[]];
+  startupRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  startupRow.alignment = NSLayoutAttributeCenterY;
+  NSTextField *startupLabel = label(@"Start Automatically");
+  startupLabel.font = [NSFont systemFontOfSize:12];
+  [startupRow addArrangedSubview:startupLabel];
+  NSView *startupSpacer = [[NSView alloc] initWithFrame:NSZeroRect];
+  [startupRow addArrangedSubview:startupSpacer];
+  NSButton *startup = [NSButton checkboxWithTitle:@""
                                             target:self action:@selector(toggleStartup:)];
   startup.state = _setup.start_automatically ? NSControlStateValueOn
                                               : NSControlStateValueOff;
   startup.accessibilityLabel = @"Start Automatically";
   startup.accessibilityRole = NSAccessibilityCheckBoxRole;
-  [stack addArrangedSubview:startup];
+  [startupRow addArrangedSubview:startup];
+  [startupCard.contentView addSubview:startupRow];
+  startupRow.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+      [startupRow.leadingAnchor constraintEqualToAnchor:startupCard.contentView.leadingAnchor],
+      [startupRow.trailingAnchor constraintEqualToAnchor:startupCard.contentView.trailingAnchor],
+      [startupRow.topAnchor constraintEqualToAnchor:startupCard.contentView.topAnchor],
+  [startupRow.bottomAnchor constraintEqualToAnchor:startupCard.contentView.bottomAnchor],
+  ]];
+  [startupCard.heightAnchor constraintEqualToConstant:40].active = YES;
+  [stack addArrangedSubview:startupCard];
 
-  NSButton *(^actionButton)(NSString *, SEL) = ^NSButton *(NSString *title,
+  NSButton *(^actionButton)(NSString *, SEL) = ^NSButton *(NSString *buttonTitle,
                                                             SEL selector) {
-    NSButton *button = [NSButton buttonWithTitle:title target:self action:selector];
-    button.accessibilityLabel = title;
+    NSButton *button = [NSButton buttonWithTitle:buttonTitle target:self action:selector];
+    button.bezelStyle = NSBezelStyleRounded;
+    button.font = [NSFont systemFontOfSize:10];
+    button.accessibilityLabel = buttonTitle;
     return button;
   };
   NSMutableArray<NSView *> *focusable = [NSMutableArray arrayWithObjects:
-      controlButton, profile, startup, nil];
+      mapView.canvas, textEquivalent, enabledControl,
+      profile, startup, nil];
   BOOL permissionNeedsSettings =
       _coordinator.status == MUSE_ON_STATUS_INACTIVE &&
       _coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_PERMISSION;
@@ -1072,30 +1810,45 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
                                   boolForKey:kStartupApprovalRequiredKey];
   BOOL retryNeeded = permissionNeedsSettings || startupNeedsSettings ||
                      _coordinator.safety_latched || _coordinator.disable_pending;
+  NSStackView *conditionalRow = [NSStackView stackViewWithViews:@[]];
+  conditionalRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  conditionalRow.alignment = NSLayoutAttributeCenterY;
+  conditionalRow.spacing = 6;
   if (startupNeedsSettings) {
-    [stack addArrangedSubview:label(@"Start Automatically — Approval Required")];
+    NSTextField *approval = label(@"Startup approval required");
+    approval.font = [NSFont systemFontOfSize:10];
+    approval.textColor = [NSColor secondaryLabelColor];
+    [conditionalRow addArrangedSubview:approval];
   }
   if (permissionNeedsSettings) {
     NSButton *settings = actionButton(@"Open Settings…", @selector(openSettings:));
-    [stack addArrangedSubview:settings];
+    [conditionalRow addArrangedSubview:settings];
     [focusable addObject:settings];
   }
   if (startupNeedsSettings) {
     NSButton *loginItems = actionButton(@"Open Login Items", @selector(openLoginItems:));
-    [stack addArrangedSubview:loginItems];
+    [conditionalRow addArrangedSubview:loginItems];
     [focusable addObject:loginItems];
   }
   if (retryNeeded) {
     NSButton *retry = actionButton(@"Retry", @selector(retry:));
-    [stack addArrangedSubview:retry];
+    [conditionalRow addArrangedSubview:retry];
     [focusable addObject:retry];
   }
+  if (conditionalRow.arrangedSubviews.count > 0) [stack addArrangedSubview:conditionalRow];
+
+  NSStackView *supportRow = [NSStackView stackViewWithViews:@[]];
+  supportRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  supportRow.alignment = NSLayoutAttributeCenterY;
+  supportRow.distribution = NSStackViewDistributionFillEqually;
+  supportRow.spacing = 5;
   NSButton *copy = actionButton(@"Copy Diagnostics", @selector(copyDiagnostics:));
   NSButton *report = actionButton(@"Report a Problem…", @selector(reportProblem:));
-  NSButton *quit = actionButton(@"Quit Codex Muse-On", @selector(quit:));
-  [stack addArrangedSubview:copy];
-  [stack addArrangedSubview:report];
-  [stack addArrangedSubview:quit];
+  NSButton *quit = actionButton(@"Quit", @selector(quit:));
+  [supportRow addArrangedSubview:copy];
+  [supportRow addArrangedSubview:report];
+  [supportRow addArrangedSubview:quit];
+  [stack addArrangedSubview:supportRow];
   [focusable addObject:copy];
   [focusable addObject:report];
   [focusable addObject:quit];
@@ -1103,20 +1856,22 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
     focusable[index].nextKeyView = focusable[(index + 1) % focusable.count];
   }
 
-  NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 760, 760)];
+  CGFloat popoverHeight = self.textEquivalentExpanded ? 798 : 650;
+  NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 496, popoverHeight)];
+  view.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
   view.accessibilityRole = NSAccessibilityGroupRole;
   view.accessibilityLabel = @"Codex Muse-On status popover";
   [view addSubview:stack];
   [NSLayoutConstraint activateConstraints:@[
       [stack.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:16],
       [stack.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-16],
-      [stack.topAnchor constraintEqualToAnchor:view.topAnchor constant:16],
-      [stack.bottomAnchor constraintLessThanOrEqualToAnchor:view.bottomAnchor constant:-16],
+      [stack.topAnchor constraintEqualToAnchor:view.topAnchor constant:12],
+      [stack.bottomAnchor constraintLessThanOrEqualToAnchor:view.bottomAnchor constant:-12],
   ]];
   NSViewController *controller = [[NSViewController alloc] init];
   controller.view = view;
   self.popover.contentViewController = controller;
-  self.popover.contentSize = NSMakeSize(760, 760);
+  self.popover.contentSize = NSMakeSize(496, popoverHeight);
 }
 
 - (void)refreshMenu {
@@ -1174,7 +1929,10 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
        "macOS may ask for permissions now; startup will be enabled by default.";
   [alert addButtonWithTitle:@"Enable"];
   [alert addButtonWithTitle:@"Cancel"];
-  if ([alert runModal] != NSAlertFirstButtonReturn) return;
+  if ([alert runModal] != NSAlertFirstButtonReturn) {
+    [self refreshMenu];
+    return;
+  }
 
   NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
   BOOL isFirstEnable = ![defaults boolForKey:kFirstEnableCompletedKey];
@@ -1224,8 +1982,16 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
   [self refreshMenu];
 }
 
-- (void)changeProfile:(NSPopUpButton *)sender {
-  MuseOnProfile next = sender.indexOfSelectedItem == 1
+- (void)toggleEnabled:(NSSegmentedControl *)sender {
+  if (sender.selectedSegment == 1) {
+    if (!_setup.enabled) [self enable:sender];
+  } else if (_setup.enabled) {
+    [self disable:sender];
+  }
+}
+
+- (void)changeProfile:(NSSegmentedControl *)sender {
+  MuseOnProfile next = sender.selectedSegment == 1
       ? MUSE_ON_PROFILE_PEDAL : MUSE_ON_PROFILE_CONTROLLER_ONLY;
   if (_profile == next) return;
   /* SIGTERM invokes the listener's safe release/restoration path first. */
@@ -1239,6 +2005,11 @@ static NSRect MuseOnNormalizedRect(const MuseOnControlMapping *mapping,
   } else {
     [self startListenerIfNeeded];
   }
+  [self refreshMenu];
+}
+
+- (void)toggleTextEquivalent:(NSButton *)sender {
+  self.textEquivalentExpanded = sender.state == NSControlStateValueOn;
   [self refreshMenu];
 }
 
