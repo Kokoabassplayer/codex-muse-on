@@ -45,10 +45,19 @@ typedef enum {
 } MuseOnInactiveReason;
 
 typedef enum {
+  MUSE_ON_SAFETY_FAILURE_NONE = 0,
+  MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE,
+  MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE,
+  MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN,
+  MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT
+} MuseOnSafetyFailure;
+
+typedef enum {
   MUSE_ON_COMMAND_NONE = 0,
   MUSE_ON_COMMAND_DISABLE,
   MUSE_ON_COMMAND_ENABLE,
-  MUSE_ON_COMMAND_RETRY
+  MUSE_ON_COMMAND_RETRY,
+  MUSE_ON_COMMAND_QUIT
 } MuseOnCommand;
 
 /*
@@ -59,6 +68,8 @@ typedef enum {
  */
 typedef struct {
   bool safety_latched;      /* safety-critical failure observed */
+  MuseOnSafetyFailure safety_failure; /* named failure, when known */
+  bool cleanup_verified;    /* hold release and Pass-through are verified */
   bool permission_granted;  /* required control permission present */
   bool controller_connected;/* exactly one complete Muse-On present */
   bool multiple_controllers;/* more than one complete Muse-On present */
@@ -74,6 +85,7 @@ typedef struct {
 typedef struct {
   bool request_filter;    /* apply per-device raw-button filtering */
   bool request_dispatch;  /* shortcut dispatch permitted */
+  bool request_cleanup;   /* release holds and verify Pass-through */
 } MuseOnEffects;
 
 typedef struct {
@@ -81,6 +93,10 @@ typedef struct {
   MuseOnInactiveReason inactive_reason;
   bool enabled_intent;    /* persistent Enabled intent (ADR 0001) */
   bool safety_latched;    /* internal latch: survives until Retry clears it */
+  MuseOnSafetyFailure safety_failure; /* specific reason for the latch */
+  bool disable_pending;   /* Disable intent awaits verified cleanup */
+  bool quit_requested;    /* Safe Quit is awaiting verified cleanup */
+  bool quit_allowed;      /* current command may finish process termination */
   MuseOnEffects effects;
 } MuseOnState;
 
@@ -102,5 +118,6 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
 
 const char *muse_on_status_string(MuseOnStatus status);
 const char *muse_on_inactive_reason_string(MuseOnInactiveReason reason);
+const char *muse_on_safety_failure_string(MuseOnSafetyFailure failure);
 
 #endif

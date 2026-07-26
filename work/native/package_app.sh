@@ -17,6 +17,8 @@ clang -std=c11 -Wall -Wextra -Werror -pedantic -fobjc-arc -I"$NATIVE_DIR" \
   "$NATIVE_DIR/muse_on_state_coordinator.c" \
   "$NATIVE_DIR/muse_on_setup_state.c" \
   "$NATIVE_DIR/muse_on_connection.c" \
+  "$NATIVE_DIR/muse_on_action_map.c" \
+  "$NATIVE_DIR/muse_on_diagnostics.c" \
   -framework IOKit -framework CoreFoundation \
   -framework AppKit -framework ApplicationServices -framework Carbon \
   -framework ServiceManagement -framework UserNotifications \

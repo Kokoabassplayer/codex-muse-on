@@ -25,6 +25,23 @@ bool muse_on_codex_is_frontmost(void) {
   }
 }
 
+bool muse_on_session_is_available(void) {
+  CFDictionaryRef session = CGSessionCopyCurrentDictionary();
+  CFBooleanRef onConsole;
+  CFBooleanRef loginDone;
+  bool available;
+
+  if (!session) return false;
+  onConsole = (CFBooleanRef)CFDictionaryGetValue(
+      session, kCGSessionOnConsoleKey);
+  loginDone = (CFBooleanRef)CFDictionaryGetValue(
+      session, kCGSessionLoginDoneKey);
+  available = (!onConsole || CFBooleanGetValue(onConsole)) &&
+              (!loginDone || CFBooleanGetValue(loginDone));
+  CFRelease(session);
+  return available;
+}
+
 bool muse_on_preflight_post_event_access(void) {
   return CGPreflightPostEventAccess();
 }

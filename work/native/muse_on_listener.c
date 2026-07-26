@@ -18,6 +18,7 @@
 #include "muse_on_key_filter.h"
 #include "muse_on_platform.h"
 #include "muse_on_shortcut_map.h"
+#include "muse_on_state_coordinator.h"
 
 /*
  * Muse-On adapter for Codex.
@@ -82,6 +83,9 @@ struct ListenerState {
   bool postEventAccess;
   bool permissionsKnown;
   bool releaseFailed;
+  MuseOnSafetyFailure safetyFailure;
+  bool safetyLatchEmitted;
+  bool recoveryStateEmitted;
   uint64_t filterRetryAfterNs;
   uint64_t permissionCheckAfterNs;
 };
@@ -98,6 +102,21 @@ static uint64_t monotonic_ns(void) {
 
 static const char *boolean_string(bool value) {
   return value ? "true" : "false";
+}
+
+static void emit_safety_latch(ListenerState *state,
+                              MuseOnSafetyFailure failure) {
+  if (!state) return;
+  if (failure == MUSE_ON_SAFETY_FAILURE_NONE) {
+    failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+  }
+  if (state->safetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
+    state->safetyFailure = failure;
+  }
+  if (state->safetyLatchEmitted) return;
+  state->safetyLatchEmitted = true;
+  printf("{\"event\":\"safety_latch\",\"reason\":\"%s\"}\n",
+         muse_on_safety_failure_string(state->safetyFailure));
 }
 
 static const char *interface_name(InterfaceKind kind) {
@@ -246,6 +265,89 @@ static bool validated_controller_location(const ListenerState *state,
   return valid;
 }
 
+static size_t complete_controller_count(const ListenerState *state) {
+  const DeviceSlot *candidate;
+  size_t complete = 0;
+
+  if (!state) return 0;
+  for (candidate = state->slots; candidate; candidate = candidate->next) {
+    const DeviceSlot *slot;
+    size_t keyboards = 0;
+    size_t joysticks = 0;
+    bool seen = false;
+
+    if (candidate->removed || candidate->locationID == 0) continue;
+    for (slot = state->slots; slot != candidate; slot = slot->next) {
+      if (!slot->removed && slot->locationID == candidate->locationID) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) continue;
+    for (slot = state->slots; slot; slot = slot->next) {
+      if (slot->removed || slot->locationID != candidate->locationID) continue;
+      if (slot->kind == kInterfaceKeyboard) {
+        keyboards++;
+      } else if (slot->kind == kInterfaceJoystick) {
+        joysticks++;
+      }
+    }
+    if (keyboards == 1 && joysticks == 1) complete++;
+  }
+  return complete;
+}
+
+static bool all_inputs_released(const ListenerState *state) {
+  uint32_t locationID;
+  const DeviceSlot *slot;
+
+  if (!validated_controller_location(state, &locationID)) return false;
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (!slot->removed && slot->locationID == locationID &&
+        !slot->neutralEntryReady) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static void emit_recovery_state(ListenerState *state) {
+  size_t completeCount;
+  uint32_t controllerLocation = 0;
+  bool controllerConnected;
+  bool filterVerified;
+  bool inputsReleased;
+
+  if (!state || state->recoveryStateEmitted) return;
+  completeCount = complete_controller_count(state);
+  controllerConnected = completeCount == 1 &&
+                        validated_controller_location(state,
+                                                      &controllerLocation);
+  inputsReleased = controllerConnected && all_inputs_released(state);
+  filterVerified = controllerConnected && state->keyFilterApplied &&
+                   muse_on_key_filter_is_active(state->keyFilter) &&
+                   muse_on_key_filter_location_id(state->keyFilter) ==
+                       controllerLocation;
+  /* Keep the recovery child alive until Neutral Entry can be observed when
+     every other Active prerequisite is already satisfied. */
+  if (controllerConnected && filter_permissions_ready(state) &&
+      state->codexFrontmost && filterVerified && !inputsReleased) {
+    return;
+  }
+  printf("{\"event\":\"recovery_state\","
+         "\"permissionGranted\":%s,\"controllerConnected\":%s,"
+         "\"multipleControllers\":%s,\"codexForeground\":%s,"
+         "\"inputsReleased\":%s,\"filterVerified\":%s,"
+         "\"keyboardOpen\":%s}\n",
+         boolean_string(filter_permissions_ready(state)),
+         boolean_string(controllerConnected),
+         boolean_string(completeCount > 1),
+         boolean_string(state->codexFrontmost),
+         boolean_string(inputsReleased), boolean_string(filterVerified),
+         boolean_string(state->keyboardOpen));
+  state->recoveryStateEmitted = true;
+}
+
 static bool slot_matches_active_filter(const ListenerState *state,
                                        const DeviceSlot *slot) {
   uint64_t locationID;
@@ -315,6 +417,7 @@ static bool force_release_synthetic_hold(ListenerState *state,
     state->syntheticHoldDown = false;
   } else {
     state->releaseFailed = true;
+    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE);
   }
   return posted;
 }
@@ -357,6 +460,7 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
         action->phase == MUSE_ON_ACTION_END &&
         state->syntheticHoldDown) {
       state->releaseFailed = true;
+      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE);
       stopRequested = 1;
     }
     return;
@@ -384,6 +488,7 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
         action->phase == MUSE_ON_ACTION_END &&
         state->syntheticHoldDown) {
       state->releaseFailed = true;
+      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE);
       stopRequested = 1;
     }
     return;
@@ -400,6 +505,7 @@ static bool routing_is_enabled(ListenerState *state) {
   uint32_t controllerLocation;
 
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return true;
+  if (state->config.safety_latched) return false;
   if (!validated_controller_location(state, &controllerLocation)) return false;
   for (DeviceSlot *slot = state->slots; slot; slot = slot->next) {
     if (!slot->removed && slot->locationID == controllerLocation &&
@@ -489,6 +595,8 @@ static void report_received(void *context, IOReturn result, void *sender,
     }
     if (hasHeldControl) return;
     slot->neutralEntryReady = true;
+    printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
+           boolean_string(all_inputs_released(state)));
     return;
   }
   if (!routing_is_enabled(state)) return;
@@ -625,6 +733,7 @@ static void device_removed(void *context, IOReturn result, void *sender,
         !muse_on_key_filter_restore(state->keyFilter)) {
       emit_error("restore_keyboard_filter", kIOReturnError);
       state->releaseFailed = true;
+      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
       stopRequested = 1;
       return;
     }
@@ -652,6 +761,7 @@ static void restore_keyboard_filter(ListenerState *state,
   if (!muse_on_key_filter_restore(state->keyFilter)) {
     emit_error("restore_keyboard_filter", kIOReturnError);
     state->releaseFailed = true;
+    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
     stopRequested = 1;
     return;
   }
@@ -672,6 +782,7 @@ static void activate_keyboard_filter(ListenerState *state,
       !muse_on_key_filter_restore(state->keyFilter)) {
     emit_error("recover_keyboard_filter", kIOReturnError);
     state->releaseFailed = true;
+    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
     stopRequested = 1;
     return;
   }
@@ -692,6 +803,7 @@ static void activate_keyboard_filter(ListenerState *state,
         !muse_on_key_filter_restore(state->keyFilter)) {
       emit_error("rollback_keyboard_filter", kIOReturnError);
       state->releaseFailed = true;
+      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
       stopRequested = 1;
       return;
     }
@@ -745,6 +857,7 @@ static void action_timer(CFRunLoopTimerRef timer, void *context) {
   if (!state) return;
   nowNs = monotonic_ns();
   update_focus_and_filter(state, nowNs);
+  if (state->config.safety_latched) emit_recovery_state(state);
 
   if (routing_is_enabled(state)) {
     for (slot = state->slots; slot; slot = slot->next) {
@@ -871,7 +984,8 @@ int main(int argc, char *argv[]) {
     fprintf(stderr,
             "usage: %s "
             "[--profile=controller-only|--profile=pedal] "
-            "[--mode=dry-run|--mode=capture-dry-run|--mode=active]\n",
+            "[--mode=dry-run|--mode=capture-dry-run|--mode=active] "
+            "[--safety-latched]\n",
             argv[0]);
     return 64;
   }
@@ -979,6 +1093,7 @@ int main(int argc, char *argv[]) {
         keyboardClosed != kIOReturnOffline) {
       emit_error("close_keyboard_manager", keyboardClosed);
       state.releaseFailed = true;
+      emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
     } else {
       state.keyboardOpen = false;
     }
@@ -987,14 +1102,21 @@ int main(int argc, char *argv[]) {
   if (opened != kIOReturnSuccess && opened != kIOReturnNotOpen) {
     emit_error("close_joystick_manager", opened);
     state.releaseFailed = true;
+    emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
   }
 
   unschedule_and_release_manager(&state, state.keyboardManager);
   unschedule_and_release_manager(&state, state.joystickManager);
   muse_on_key_filter_destroy(state.keyFilter);
   cleanup_slots(&state);
-  printf("{\"event\":\"stopped\",\"releaseFailed\":%s}\n",
-         boolean_string(state.releaseFailed));
+  if (state.releaseFailed &&
+      state.safetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
+    emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  }
+  printf("{\"event\":\"stopped\",\"releaseFailed\":%s,"
+         "\"safetyReason\":\"%s\"}\n",
+         boolean_string(state.releaseFailed),
+         muse_on_safety_failure_string(state.safetyFailure));
   if (state.releaseFailed) return 3;
   return exitCode;
 }

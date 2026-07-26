@@ -2,6 +2,7 @@
 #define MUSE_ON_ACTION_MAP_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "muse_on_decoder.h"
@@ -16,6 +17,27 @@ typedef enum {
   MUSE_ON_ACTION_BEGIN,
   MUSE_ON_ACTION_END
 } MuseOnActionPhase;
+
+/*
+ * The physical Controller Map is the single source of truth for dispatch and
+ * presentation. The row order is also the semantic order used by the native
+ * popover: turntable, white buttons, black buttons, directional balls, pedal.
+ */
+typedef enum {
+  MUSE_ON_CONTROL_GROUP_TURNTABLE = 0,
+  MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
+  MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
+  MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+  MUSE_ON_CONTROL_GROUP_OPTIONAL_PEDAL,
+  MUSE_ON_CONTROL_GROUP_COUNT
+} MuseOnControlGroup;
+
+typedef enum {
+  MUSE_ON_CONTROL_SHAPE_TURNTABLE = 0,
+  MUSE_ON_CONTROL_SHAPE_BUTTON,
+  MUSE_ON_CONTROL_SHAPE_BALL,
+  MUSE_ON_CONTROL_SHAPE_PEDAL
+} MuseOnControlShape;
 
 typedef enum {
   MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE = 0,
@@ -44,6 +66,31 @@ typedef struct {
   MuseOnEventName source;
 } MuseOnActionEvent;
 
+typedef struct {
+  bool available;
+  MuseOnActionId press_action;
+  MuseOnActionPhase press_phase;
+  bool release_mapped;
+  MuseOnActionId release_action;
+  MuseOnActionPhase release_phase;
+} MuseOnControlProfileMapping;
+
+typedef struct {
+  const char *identifier;
+  const char *physical_label;
+  MuseOnControlGroup group;
+  MuseOnControlShape shape;
+  float x;
+  float y;
+  float width;
+  float height;
+  MuseOnEventName press_event;
+  MuseOnEventName release_event;
+  uint64_t debounce_ns;
+  bool optional;
+  MuseOnControlProfileMapping profiles[2];
+} MuseOnControlMapping;
+
 enum { MUSE_ON_HOLD_DEBOUNCE_NS = 20000000ULL };
 
 typedef struct {
@@ -67,7 +114,16 @@ bool muse_on_action_router_tick(MuseOnActionRouter *router, uint64_t timestamp_n
                                 MuseOnActionEvent *action);
 const char *muse_on_profile_string(MuseOnProfile profile);
 const char *muse_on_action_id_string(MuseOnActionId action);
+const char *muse_on_action_display_name(MuseOnActionId action);
 const char *muse_on_action_phase_string(MuseOnActionPhase phase);
 const char *muse_on_event_name_string(MuseOnEventName event);
+
+size_t muse_on_control_mapping_count(void);
+const MuseOnControlMapping *muse_on_control_mapping_at(size_t index);
+const MuseOnControlProfileMapping *muse_on_control_mapping_profile(
+    const MuseOnControlMapping *mapping, MuseOnProfile profile);
+const char *muse_on_control_group_title(MuseOnControlGroup group);
+const char *muse_on_control_shape_string(MuseOnControlShape shape);
+bool muse_on_control_map_validate(MuseOnProfile profile);
 
 #endif

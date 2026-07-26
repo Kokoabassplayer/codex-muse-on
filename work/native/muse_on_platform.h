@@ -20,6 +20,7 @@ typedef struct {
 
 bool muse_on_bundle_id_is_codex(const char *bundle_id);
 bool muse_on_codex_is_frontmost(void);
+bool muse_on_session_is_available(void);
 bool muse_on_preflight_post_event_access(void);
 bool muse_on_request_post_event_access(void);
 size_t muse_on_hyper_key_event_sequence(uint16_t mac_virtual_key,

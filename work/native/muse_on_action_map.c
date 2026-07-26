@@ -1,5 +1,132 @@
 #include "muse_on_action_map.h"
 
+typedef struct {
+  const char *identifier;
+  const char *display_name;
+} MuseOnActionInfo;
+
+static const MuseOnActionInfo kActionInfo[MUSE_ON_ACTION_COUNT] = {
+    {"composer.toggleFastMode", "Toggle Fast Mode"},
+    {"approval.approve", "Approve"},
+    {"approval.decline", "Decline"},
+    {"forkThread", "Fork Thread"},
+    {"copyConversationMarkdown", "Copy Conversation as Markdown"},
+    {"composer.submit", "Submit"},
+    {"toggleReviewTab", "Toggle Review Tab"},
+    {"globalDictationHold", "Hold Global Dictation"},
+    {"environmentAction1", "Environment Action 1"},
+    {"composer.decreaseReasoningEffort", "Decrease Reasoning Effort"},
+    {"composer.increaseReasoningEffort", "Increase Reasoning Effort"},
+    {"previousThread", "Previous Thread"},
+    {"nextThread", "Next Thread"},
+    {"navigateBack", "Navigate Back"},
+    {"navigateForward", "Navigate Forward"},
+    {"composer.openModelPicker", "Open Model Picker"},
+};
+
+#define TRIGGER_PROFILE(action) \
+  {true, action, MUSE_ON_ACTION_TRIGGER, false, action, MUSE_ON_ACTION_TRIGGER}
+#define HOLD_PROFILE(action) \
+  {true, action, MUSE_ON_ACTION_BEGIN, true, action, MUSE_ON_ACTION_END}
+#define UNAVAILABLE_PROFILE \
+  {false, MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE, MUSE_ON_ACTION_TRIGGER, \
+   false, MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE, MUSE_ON_ACTION_TRIGGER}
+
+static const MuseOnControlMapping kControlMap[] = {
+    {"turntable.clockwise", "Turntable clockwise",
+     MUSE_ON_CONTROL_GROUP_TURNTABLE, MUSE_ON_CONTROL_SHAPE_TURNTABLE,
+     0.04f, 0.18f, 0.18f, 0.58f,
+     MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED,
+     MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT)}},
+    {"turntable.counterclockwise", "Turntable counterclockwise",
+     MUSE_ON_CONTROL_GROUP_TURNTABLE, MUSE_ON_CONTROL_SHAPE_TURNTABLE,
+     0.04f, 0.18f, 0.18f, 0.58f,
+     MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED,
+     MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT)}},
+    {"white1", "White button 1", MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.28f, 0.48f, 0.08f, 0.38f,
+     MUSE_ON_EVENT_WHITE1_DOWN, MUSE_ON_EVENT_WHITE1_UP, 250000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE)}},
+    {"white3", "White button 3", MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.38f, 0.48f, 0.08f, 0.38f,
+     MUSE_ON_EVENT_WHITE3_DOWN, MUSE_ON_EVENT_WHITE3_UP, 750000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_APPROVAL_DECLINE),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_APPROVAL_DECLINE)}},
+    {"white5", "White button 5", MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.48f, 0.48f, 0.08f, 0.38f,
+     MUSE_ON_EVENT_WHITE5_DOWN, MUSE_ON_EVENT_WHITE5_UP, 80000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COPY_CONVERSATION_MARKDOWN),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COPY_CONVERSATION_MARKDOWN)}},
+    {"white7", "White button 7", MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.58f, 0.48f, 0.08f, 0.38f,
+     MUSE_ON_EVENT_WHITE7_DOWN, MUSE_ON_EVENT_WHITE7_UP, 50000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_TOGGLE_REVIEW_TAB),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_TOGGLE_REVIEW_TAB)}},
+    {"black2", "Black button 2", MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.335f, 0.24f, 0.065f, 0.23f,
+     MUSE_ON_EVENT_BLACK2_DOWN, MUSE_ON_EVENT_BLACK2_UP, 40000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_APPROVAL_APPROVE),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_APPROVAL_APPROVE)}},
+    {"black4", "Black button 4", MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.435f, 0.24f, 0.065f, 0.23f,
+     MUSE_ON_EVENT_BLACK4_DOWN, MUSE_ON_EVENT_BLACK4_UP, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_FORK_THREAD),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_FORK_THREAD)}},
+    {"black6", "Black button 6", MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.535f, 0.24f, 0.065f, 0.23f,
+     MUSE_ON_EVENT_BLACK6_DOWN, MUSE_ON_EVENT_BLACK6_UP, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_SUBMIT),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_SUBMIT)}},
+    {"black8", "Black button 8", MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
+     MUSE_ON_CONTROL_SHAPE_BUTTON, 0.635f, 0.24f, 0.065f, 0.23f,
+     MUSE_ON_EVENT_BLACK8_DOWN, MUSE_ON_EVENT_BLACK8_UP, 20000000ULL, false,
+     {HOLD_PROFILE(MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_ENVIRONMENT_ACTION_1)}},
+    {"leftBall.north", "Left ball north", MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+     MUSE_ON_CONTROL_SHAPE_BALL, 0.74f, 0.19f, 0.08f, 0.14f,
+     MUSE_ON_EVENT_LEFT_BALL_NORTH_ENGAGED,
+     MUSE_ON_EVENT_LEFT_BALL_NORTH_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_PREVIOUS_THREAD),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_PREVIOUS_THREAD)}},
+    {"leftBall.south", "Left ball south", MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+     MUSE_ON_CONTROL_SHAPE_BALL, 0.74f, 0.54f, 0.08f, 0.14f,
+     MUSE_ON_EVENT_LEFT_BALL_SOUTH_ENGAGED,
+     MUSE_ON_EVENT_LEFT_BALL_SOUTH_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_NEXT_THREAD),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_NEXT_THREAD)}},
+    {"rightBall.vertical", "Right ball vertical", MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+     MUSE_ON_CONTROL_SHAPE_BALL, 0.88f, 0.19f, 0.08f, 0.14f,
+     MUSE_ON_EVENT_RIGHT_BALL_VERTICAL_ENGAGED,
+     MUSE_ON_EVENT_RIGHT_BALL_VERTICAL_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_OPEN_MODEL_PICKER),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_OPEN_MODEL_PICKER)}},
+    {"rightBall.west", "Right ball west", MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+     MUSE_ON_CONTROL_SHAPE_BALL, 0.83f, 0.39f, 0.08f, 0.14f,
+     MUSE_ON_EVENT_RIGHT_BALL_WEST_ENGAGED,
+     MUSE_ON_EVENT_RIGHT_BALL_WEST_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_NAVIGATE_BACK),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_NAVIGATE_BACK)}},
+    {"rightBall.east", "Right ball east", MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS,
+     MUSE_ON_CONTROL_SHAPE_BALL, 0.91f, 0.39f, 0.08f, 0.14f,
+     MUSE_ON_EVENT_RIGHT_BALL_EAST_ENGAGED,
+     MUSE_ON_EVENT_RIGHT_BALL_EAST_RELEASED, 20000000ULL, false,
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_NAVIGATE_FORWARD),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_NAVIGATE_FORWARD)}},
+    {"pedal", "Optional pedal", MUSE_ON_CONTROL_GROUP_OPTIONAL_PEDAL,
+     MUSE_ON_CONTROL_SHAPE_PEDAL, 0.31f, 0.86f, 0.36f, 0.10f,
+     MUSE_ON_EVENT_PEDAL_DOWN, MUSE_ON_EVENT_PEDAL_UP, 20000000ULL, true,
+     {UNAVAILABLE_PROFILE, HOLD_PROFILE(MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD)}},
+};
+
+static size_t control_mapping_count(void) {
+  return sizeof(kControlMap) / sizeof(kControlMap[0]);
+}
+
 static bool set_action(MuseOnActionEvent *action, MuseOnActionId id,
                        MuseOnActionPhase phase, MuseOnEventName source) {
   if (!action) return false;
@@ -10,14 +137,14 @@ static bool set_action(MuseOnActionEvent *action, MuseOnActionId id,
 }
 
 static uint64_t trigger_debounce_ns(MuseOnEventName source) {
-  switch (source) {
-    case MUSE_ON_EVENT_WHITE1_DOWN: return 250000000ULL;
-    case MUSE_ON_EVENT_BLACK2_DOWN: return 40000000ULL;
-    case MUSE_ON_EVENT_WHITE3_DOWN: return 750000000ULL;
-    case MUSE_ON_EVENT_WHITE5_DOWN: return 80000000ULL;
-    case MUSE_ON_EVENT_WHITE7_DOWN: return 50000000ULL;
-    default: return 20000000ULL;
+  size_t index;
+
+  for (index = 0; index < control_mapping_count(); index++) {
+    if (kControlMap[index].press_event == source) {
+      return kControlMap[index].debounce_ns;
+    }
   }
+  return 20000000ULL;
 }
 
 void muse_on_action_router_init(MuseOnActionRouter *router, MuseOnProfile profile) {
@@ -95,71 +222,116 @@ bool muse_on_action_router_route(MuseOnActionRouter *router,
 
 bool muse_on_map_event(MuseOnProfile profile, MuseOnEventName source,
                        MuseOnActionEvent *action) {
-  if (!action) return false;
-  switch (source) {
-    case MUSE_ON_EVENT_WHITE1_DOWN:
-      return set_action(action, MUSE_ON_ACTION_COMPOSER_TOGGLE_FAST_MODE,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_BLACK2_DOWN:
-      return set_action(action, MUSE_ON_ACTION_APPROVAL_APPROVE,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_WHITE3_DOWN:
-      return set_action(action, MUSE_ON_ACTION_APPROVAL_DECLINE,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_BLACK4_DOWN:
-      return set_action(action, MUSE_ON_ACTION_FORK_THREAD,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_WHITE5_DOWN:
-      return set_action(action, MUSE_ON_ACTION_COPY_CONVERSATION_MARKDOWN,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_BLACK6_DOWN:
-      return set_action(action, MUSE_ON_ACTION_COMPOSER_SUBMIT,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_WHITE7_DOWN:
-      return set_action(action, MUSE_ON_ACTION_TOGGLE_REVIEW_TAB,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_BLACK8_DOWN:
-      return profile == MUSE_ON_PROFILE_PEDAL
-          ? set_action(action, MUSE_ON_ACTION_ENVIRONMENT_ACTION_1,
-                       MUSE_ON_ACTION_TRIGGER, source)
-          : set_action(action, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
-                       MUSE_ON_ACTION_BEGIN, source);
-    case MUSE_ON_EVENT_BLACK8_UP:
-      return profile == MUSE_ON_PROFILE_CONTROLLER_ONLY &&
-          set_action(action, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
-                     MUSE_ON_ACTION_END, source);
-    case MUSE_ON_EVENT_PEDAL_DOWN:
-      return profile == MUSE_ON_PROFILE_PEDAL &&
-          set_action(action, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
-                     MUSE_ON_ACTION_BEGIN, source);
-    case MUSE_ON_EVENT_PEDAL_UP:
-      return profile == MUSE_ON_PROFILE_PEDAL &&
-          set_action(action, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
-                     MUSE_ON_ACTION_END, source);
-    case MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_LEFT_BALL_NORTH_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_PREVIOUS_THREAD,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_LEFT_BALL_SOUTH_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_NEXT_THREAD,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_RIGHT_BALL_WEST_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_NAVIGATE_BACK,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_RIGHT_BALL_EAST_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_NAVIGATE_FORWARD,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    case MUSE_ON_EVENT_RIGHT_BALL_VERTICAL_ENGAGED:
-      return set_action(action, MUSE_ON_ACTION_COMPOSER_OPEN_MODEL_PICKER,
-                        MUSE_ON_ACTION_TRIGGER, source);
-    default:
-      return false;
+  size_t index;
+  const MuseOnControlProfileMapping *profile_mapping;
+
+  if (!action || (profile != MUSE_ON_PROFILE_CONTROLLER_ONLY &&
+                  profile != MUSE_ON_PROFILE_PEDAL)) {
+    return false;
   }
+  for (index = 0; index < control_mapping_count(); index++) {
+    profile_mapping = &kControlMap[index].profiles[profile];
+    if (!profile_mapping->available) continue;
+    if (source == kControlMap[index].press_event) {
+      return set_action(action, profile_mapping->press_action,
+                        profile_mapping->press_phase, source);
+    }
+    if (profile_mapping->release_mapped &&
+        source == kControlMap[index].release_event) {
+      return set_action(action, profile_mapping->release_action,
+                        profile_mapping->release_phase, source);
+    }
+  }
+  return false;
+}
+
+size_t muse_on_control_mapping_count(void) {
+  return control_mapping_count();
+}
+
+const MuseOnControlMapping *muse_on_control_mapping_at(size_t index) {
+  return index < control_mapping_count() ? &kControlMap[index] : NULL;
+}
+
+const MuseOnControlProfileMapping *muse_on_control_mapping_profile(
+    const MuseOnControlMapping *mapping, MuseOnProfile profile) {
+  if (!mapping || (profile != MUSE_ON_PROFILE_CONTROLLER_ONLY &&
+                  profile != MUSE_ON_PROFILE_PEDAL)) {
+    return NULL;
+  }
+  return &mapping->profiles[profile];
+}
+
+const char *muse_on_control_group_title(MuseOnControlGroup group) {
+  switch (group) {
+    case MUSE_ON_CONTROL_GROUP_TURNTABLE: return "Turntable";
+    case MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS: return "White buttons";
+    case MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS: return "Black buttons";
+    case MUSE_ON_CONTROL_GROUP_DIRECTIONAL_BALLS: return "Directional balls";
+    case MUSE_ON_CONTROL_GROUP_OPTIONAL_PEDAL: return "Optional pedal";
+    case MUSE_ON_CONTROL_GROUP_COUNT: break;
+  }
+  return "Unknown group";
+}
+
+const char *muse_on_control_shape_string(MuseOnControlShape shape) {
+  switch (shape) {
+    case MUSE_ON_CONTROL_SHAPE_TURNTABLE: return "turntable";
+    case MUSE_ON_CONTROL_SHAPE_BUTTON: return "button";
+    case MUSE_ON_CONTROL_SHAPE_BALL: return "ball";
+    case MUSE_ON_CONTROL_SHAPE_PEDAL: return "pedal";
+  }
+  return "unknown";
+}
+
+bool muse_on_control_map_validate(MuseOnProfile profile) {
+  bool seen_actions[MUSE_ON_ACTION_COUNT] = {false};
+  size_t mapped_count = 0;
+  size_t index;
+
+  if (profile != MUSE_ON_PROFILE_CONTROLLER_ONLY &&
+      profile != MUSE_ON_PROFILE_PEDAL) {
+    return false;
+  }
+  for (index = 0; index < control_mapping_count(); index++) {
+    const MuseOnControlMapping *mapping = &kControlMap[index];
+    const MuseOnControlProfileMapping *profile_mapping =
+        &mapping->profiles[profile];
+    MuseOnActionEvent action;
+
+    if (!mapping->identifier || !mapping->physical_label ||
+        mapping->press_event == MUSE_ON_EVENT_NONE ||
+        mapping->group >= MUSE_ON_CONTROL_GROUP_COUNT ||
+        mapping->x < 0.0f || mapping->y < 0.0f || mapping->width <= 0.0f ||
+        mapping->height <= 0.0f || mapping->x + mapping->width > 1.0f ||
+        mapping->y + mapping->height > 1.0f) {
+      return false;
+    }
+    if (!profile_mapping->available) {
+      if (!mapping->optional || profile == MUSE_ON_PROFILE_PEDAL) return false;
+      continue;
+    }
+    mapped_count++;
+    if ((unsigned int)profile_mapping->press_action >= MUSE_ON_ACTION_COUNT ||
+        seen_actions[profile_mapping->press_action] ||
+        !muse_on_map_event(profile, mapping->press_event, &action) ||
+        action.id != profile_mapping->press_action ||
+        action.phase != profile_mapping->press_phase) {
+      return false;
+    }
+    seen_actions[profile_mapping->press_action] = true;
+    if (profile_mapping->release_mapped) {
+      if (mapping->release_event == MUSE_ON_EVENT_NONE ||
+          !muse_on_map_event(profile, mapping->release_event, &action) ||
+          action.id != profile_mapping->release_action ||
+          action.phase != profile_mapping->release_phase) {
+        return false;
+      }
+    } else if (muse_on_map_event(profile, mapping->release_event, &action)) {
+      return false;
+    }
+  }
+  return mapped_count == (profile == MUSE_ON_PROFILE_PEDAL ? 16 : 15);
 }
 
 const char *muse_on_profile_string(MuseOnProfile profile) {
@@ -176,15 +348,13 @@ const char *muse_on_action_phase_string(MuseOnActionPhase phase) {
 }
 
 const char *muse_on_action_id_string(MuseOnActionId action) {
-  static const char *const names[] = {
-      "composer.toggleFastMode", "approval.approve", "approval.decline",
-      "forkThread", "copyConversationMarkdown", "composer.submit",
-      "toggleReviewTab", "globalDictationHold", "environmentAction1",
-      "composer.decreaseReasoningEffort", "composer.increaseReasoningEffort",
-      "previousThread", "nextThread", "navigateBack", "navigateForward",
-      "composer.openModelPicker"};
-  if ((unsigned int)action >= sizeof(names) / sizeof(names[0])) return "unknown";
-  return names[action];
+  if ((unsigned int)action >= MUSE_ON_ACTION_COUNT) return "unknown";
+  return kActionInfo[action].identifier;
+}
+
+const char *muse_on_action_display_name(MuseOnActionId action) {
+  if ((unsigned int)action >= MUSE_ON_ACTION_COUNT) return "Unknown action";
+  return kActionInfo[action].display_name;
 }
 
 const char *muse_on_event_name_string(MuseOnEventName event) {

@@ -1,12 +1,18 @@
 #include "muse_on_state_coordinator.h"
 
 void muse_on_state_init(MuseOnState *state) {
+  if (!state) return;
   state->status = MUSE_ON_STATUS_DISABLED;
   state->inactive_reason = MUSE_ON_INACTIVE_REASON_NONE;
   state->enabled_intent = false;
   state->safety_latched = false;
+  state->safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  state->disable_pending = false;
+  state->quit_requested = false;
+  state->quit_allowed = false;
   state->effects.request_filter = false;
   state->effects.request_dispatch = false;
+  state->effects.request_cleanup = false;
 }
 
 /*
@@ -38,8 +44,76 @@ static MuseOnInactiveReason evaluate_inactive_reason(
   return MUSE_ON_INACTIVE_REASON_NONE;
 }
 
+static MuseOnSafetyFailure observed_safety_failure(
+    MuseOnPrerequisites prerequisites) {
+  if (prerequisites.safety_failure != MUSE_ON_SAFETY_FAILURE_NONE) {
+    return prerequisites.safety_failure;
+  }
+  return prerequisites.safety_latched
+      ? MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN
+      : MUSE_ON_SAFETY_FAILURE_NONE;
+}
+
+static bool cleanup_is_verified(MuseOnPrerequisites prerequisites) {
+  return prerequisites.cleanup_verified &&
+         observed_safety_failure(prerequisites) == MUSE_ON_SAFETY_FAILURE_NONE;
+}
+
+static void set_disabled(MuseOnState *state) {
+  state->status = MUSE_ON_STATUS_DISABLED;
+  state->inactive_reason = MUSE_ON_INACTIVE_REASON_NONE;
+  state->safety_latched = false;
+  state->safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  state->disable_pending = false;
+  state->quit_requested = false;
+  state->quit_allowed = false;
+  state->effects.request_filter = false;
+  state->effects.request_dispatch = false;
+}
+
+static void set_safety_latch(MuseOnState *state,
+                             MuseOnSafetyFailure failure,
+                             MuseOnPrerequisites prerequisites) {
+  state->safety_latched = true;
+  if (failure != MUSE_ON_SAFETY_FAILURE_NONE) {
+    state->safety_failure = failure;
+  } else if (state->safety_failure == MUSE_ON_SAFETY_FAILURE_NONE) {
+    state->safety_failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+  }
+  state->status = MUSE_ON_STATUS_SAFETY_LATCH;
+  state->inactive_reason = MUSE_ON_INACTIVE_REASON_SAFETY_LATCH;
+  /* Enabled + Connected remains Reserved even while dispatch is latched. */
+  state->effects.request_filter = state->enabled_intent &&
+                                  prerequisites.controller_connected &&
+                                  !prerequisites.multiple_controllers;
+  state->effects.request_dispatch = false;
+}
+
+static void set_active_or_inactive(MuseOnState *state,
+                                   MuseOnPrerequisites prerequisites) {
+  state->safety_latched = false;
+  state->safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  state->inactive_reason = evaluate_inactive_reason(prerequisites);
+  if (state->inactive_reason == MUSE_ON_INACTIVE_REASON_NONE) {
+    state->status = MUSE_ON_STATUS_ACTIVE;
+    state->effects.request_filter = true;
+    state->effects.request_dispatch = true;
+    return;
+  }
+  state->status = MUSE_ON_STATUS_INACTIVE;
+  state->effects.request_filter = prerequisites.controller_connected &&
+                                  !prerequisites.multiple_controllers;
+  state->effects.request_dispatch = false;
+}
+
 void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
                          MuseOnPrerequisites prerequisites) {
+  MuseOnSafetyFailure observedFailure;
+
+  if (!state) return;
+  state->quit_allowed = false;
+  state->effects.request_cleanup = false;
+
   /* --- 1. Fold user command into persistent intent --- */
   switch (command) {
     case MUSE_ON_COMMAND_ENABLE:
@@ -52,17 +126,60 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
     case MUSE_ON_COMMAND_RETRY:
       /* Neither changes the Enabled intent. */
       break;
+    case MUSE_ON_COMMAND_QUIT:
+      state->quit_requested = true;
+      break;
+  }
+
+  if (command == MUSE_ON_COMMAND_DISABLE) {
+    state->enabled_intent = false;
+    state->disable_pending = true;
+    state->quit_requested = false;
+    state->effects.request_cleanup = true;
+    if (cleanup_is_verified(prerequisites)) {
+      set_disabled(state);
+    } else {
+      observedFailure = observed_safety_failure(prerequisites);
+      set_safety_latch(state, observedFailure, prerequisites);
+    }
+    return;
+  }
+
+  if (state->disable_pending) {
+    if (command == MUSE_ON_COMMAND_RETRY) {
+      state->effects.request_cleanup = true;
+      if (cleanup_is_verified(prerequisites)) {
+        set_disabled(state);
+      } else {
+        set_safety_latch(state, observed_safety_failure(prerequisites),
+                         prerequisites);
+      }
+    } else {
+      set_safety_latch(state, MUSE_ON_SAFETY_FAILURE_NONE, prerequisites);
+    }
+    return;
+  }
+
+  if (command == MUSE_ON_COMMAND_QUIT || state->quit_requested) {
+    state->effects.request_cleanup = true;
+    if (cleanup_is_verified(prerequisites)) {
+      state->quit_allowed = true;
+      state->effects.request_filter = false;
+      state->effects.request_dispatch = false;
+      return;
+    }
+    set_safety_latch(state, observed_safety_failure(prerequisites),
+                     prerequisites);
+    return;
   }
 
   /* --- 2. If not Enabled, the state is Disabled and sends nothing --- */
   if (!state->enabled_intent) {
-    state->status = MUSE_ON_STATUS_DISABLED;
-    state->inactive_reason = MUSE_ON_INACTIVE_REASON_NONE;
-    state->safety_latched = false;
-    state->effects.request_filter = false;
-    state->effects.request_dispatch = false;
+    set_disabled(state);
     return;
   }
+
+  observedFailure = observed_safety_failure(prerequisites);
 
   /* --- 3. Update the internal safety latch (ADR 0003) ---
    *
@@ -71,40 +188,29 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
    * can leave it. A plain observation (NONE) reporting safety_latched=false
    * does NOT clear the latch — the human must press Retry.
    */
-  if (prerequisites.safety_latched) {
+  if (observedFailure != MUSE_ON_SAFETY_FAILURE_NONE) {
+    if (!state->safety_latched ||
+        command == MUSE_ON_COMMAND_RETRY) {
+      state->safety_failure = observedFailure;
+    }
     state->safety_latched = true;
-  } else if (command == MUSE_ON_COMMAND_RETRY &&
+  } else if (state->safety_latched && command == MUSE_ON_COMMAND_RETRY &&
+             prerequisites.cleanup_verified &&
              evaluate_inactive_reason(prerequisites) ==
                  MUSE_ON_INACTIVE_REASON_NONE) {
     state->safety_latched = false;
+    state->safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
   }
 
   /* --- 4. Safety latch has the absolute highest priority --- */
   if (state->safety_latched) {
-    state->status = MUSE_ON_STATUS_SAFETY_LATCH;
-    state->inactive_reason = MUSE_ON_INACTIVE_REASON_SAFETY_LATCH;
-    /* Reserved: filtering may remain applied (ADR 0006), but no dispatch. */
-    state->effects.request_filter = prerequisites.controller_connected &&
-                                    !prerequisites.multiple_controllers;
-    state->effects.request_dispatch = false;
+    state->effects.request_cleanup = command == MUSE_ON_COMMAND_RETRY;
+    set_safety_latch(state, MUSE_ON_SAFETY_FAILURE_NONE, prerequisites);
     return;
   }
 
   /* --- 5. Evaluate Active gates in priority order --- */
-  state->inactive_reason = evaluate_inactive_reason(prerequisites);
-
-  if (state->inactive_reason == MUSE_ON_INACTIVE_REASON_NONE) {
-    state->status = MUSE_ON_STATUS_ACTIVE;
-    state->effects.request_filter = true;
-    state->effects.request_dispatch = true;
-    return;
-  }
-
-  /* --- 6. Inactive: filter while connected (Reserved, ADR 0006) --- */
-  state->status = MUSE_ON_STATUS_INACTIVE;
-  state->effects.request_filter = prerequisites.controller_connected &&
-                                  !prerequisites.multiple_controllers;
-  state->effects.request_dispatch = false;
+  set_active_or_inactive(state, prerequisites);
 }
 
 const char *muse_on_status_string(MuseOnStatus status) {
@@ -127,6 +233,20 @@ const char *muse_on_inactive_reason_string(MuseOnInactiveReason reason) {
     case MUSE_ON_INACTIVE_REASON_SESSION: return "session_unavailable";
     case MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND: return "codex_not_foreground";
     case MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS: return "release_controls";
+  }
+  return "unknown";
+}
+
+const char *muse_on_safety_failure_string(MuseOnSafetyFailure failure) {
+  switch (failure) {
+    case MUSE_ON_SAFETY_FAILURE_NONE: return "none";
+    case MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE: return "hold_release_failed";
+    case MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE:
+      return "pass_through_restoration_failed";
+    case MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN:
+      return "device_state_uncertain";
+    case MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT:
+      return "previous_session_ended_unexpectedly";
   }
   return "unknown";
 }

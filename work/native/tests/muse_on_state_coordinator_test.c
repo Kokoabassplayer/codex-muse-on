@@ -7,6 +7,8 @@
 static MuseOnPrerequisites all_clear(void) {
   MuseOnPrerequisites p;
   p.safety_latched = false;
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = true;
   p.permission_granted = true;
   p.controller_connected = true;
   p.multiple_controllers = false;
@@ -322,8 +324,13 @@ static void test_disable_during_safety_latch(void) {
   assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
 
   muse_on_state_apply(&state, MUSE_ON_COMMAND_DISABLE, p);
-  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
   assert(state.enabled_intent == false);
+  assert(state.disable_pending == true);
+
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, all_clear());
+  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(state.disable_pending == false);
 }
 
 /* ---- Sticky safety latch (ADR 0003) ---- */
@@ -383,10 +390,154 @@ static void test_disable_wins_over_latch(void) {
 
   /* Even a safety observation still present cannot block Disable. */
   muse_on_state_apply(&state, MUSE_ON_COMMAND_DISABLE, p);
-  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
   assert(state.enabled_intent == false);
-  assert(state.safety_latched == false);
+  assert(state.safety_latched == true);
+  assert(state.disable_pending == true);
   assert(state.effects.request_filter == false);
+  assert(state.effects.request_dispatch == false);
+
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, all_clear());
+  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(state.safety_latched == false);
+  assert(state.disable_pending == false);
+}
+
+/* A safety-critical failure enters a named sticky latch and blocks dispatch. */
+static void test_named_safety_failure_is_sticky_and_fail_closed(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.safety_latched == true);
+  assert(state.safety_failure == MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE);
+  assert(state.effects.request_filter == true);
+  assert(state.effects.request_dispatch == false);
+
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, all_clear());
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.safety_failure == MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE);
+  assert(state.effects.request_dispatch == false);
+}
+
+/* Retry needs verified cleanup in addition to every ordinary Active gate. */
+static void test_retry_requires_cleanup_and_every_gate(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.cleanup_verified = true;
+  p.session_available = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, all_clear());
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(state.safety_latched == false);
+}
+
+/* Disable persists immediately while failed cleanup remains latched. */
+static void test_disable_pending_resolves_to_disabled_after_retry(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE;
+  p.cleanup_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_DISABLE, p);
+  assert(state.enabled_intent == false);
+  assert(state.disable_pending == true);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.effects.request_dispatch == false);
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(state.disable_pending == false);
+  assert(state.enabled_intent == false);
+}
+
+/* A prior process without Safe Quit must not resume Active automatically. */
+static void test_unclean_prior_exit_latches_next_launch(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.safety_failure == MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT);
+
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, all_clear());
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+}
+
+/* Ordinary focus/device/session gates recover without creating a latch. */
+static void test_ordinary_gates_auto_recover_without_latch(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p;
+
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, all_clear());
+
+  p = all_clear();
+  p.codex_foreground = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.safety_latched == false);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, all_clear());
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+
+  p = all_clear();
+  p.controller_connected = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.safety_latched == false);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, all_clear());
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+
+  p = all_clear();
+  p.session_available = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.safety_latched == false);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, all_clear());
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+}
+
+/* Quit is deferred until cleanup is verified, then becomes explicitly allowed. */
+static void test_safe_quit_requires_verified_cleanup(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  p.cleanup_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_QUIT, p);
+  assert(state.quit_requested == true);
+  assert(state.quit_allowed == false);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.effects.request_dispatch == false);
+
+  p.cleanup_verified = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.quit_allowed == true);
   assert(state.effects.request_dispatch == false);
 }
 
@@ -450,6 +601,24 @@ static void test_inactive_reason_strings(void) {
                 "release_controls") == 0);
 }
 
+static void test_safety_failure_strings(void) {
+  assert(strcmp(muse_on_safety_failure_string(
+                    MUSE_ON_SAFETY_FAILURE_NONE),
+                "none") == 0);
+  assert(strcmp(muse_on_safety_failure_string(
+                    MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE),
+                "hold_release_failed") == 0);
+  assert(strcmp(muse_on_safety_failure_string(
+                    MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE),
+                "pass_through_restoration_failed") == 0);
+  assert(strcmp(muse_on_safety_failure_string(
+                    MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN),
+                "device_state_uncertain") == 0);
+  assert(strcmp(muse_on_safety_failure_string(
+                    MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT),
+                "previous_session_ended_unexpectedly") == 0);
+}
+
 int main(void) {
   test_initial_state_is_disabled();
   test_disabled_ignores_observations();
@@ -477,8 +646,15 @@ int main(void) {
   test_latch_persists_through_ordinary_observation();
   test_only_retry_clears_latch();
   test_disable_wins_over_latch();
+  test_named_safety_failure_is_sticky_and_fail_closed();
+  test_retry_requires_cleanup_and_every_gate();
+  test_disable_pending_resolves_to_disabled_after_retry();
+  test_unclean_prior_exit_latches_next_launch();
+  test_ordinary_gates_auto_recover_without_latch();
+  test_safe_quit_requires_verified_cleanup();
   test_disconnect_recovers_on_reconnect();
   test_status_strings();
   test_inactive_reason_strings();
+  test_safety_failure_strings();
   return 0;
 }

@@ -7,11 +7,13 @@ bool muse_on_config_parse(int argc, const char *const argv[],
   MuseOnConfig candidate;
   bool mode_seen = false;
   bool profile_seen = false;
+  bool safety_seen = false;
   int index;
 
   if (!config || argc < 1 || !argv) return false;
   candidate.profile = MUSE_ON_PROFILE_CONTROLLER_ONLY;
   candidate.mode = MUSE_ON_MODE_DRY_RUN;
+  candidate.safety_latched = false;
 
   for (index = 1; index < argc; index++) {
     const char *argument = argv[index];
@@ -37,6 +39,13 @@ bool muse_on_config_parse(int argc, const char *const argv[],
       } else if (strcmp(argument, "--mode=capture-dry-run") == 0) {
         candidate.mode = MUSE_ON_MODE_CAPTURE_DRY_RUN;
       }
+      continue;
+    }
+
+    if (strcmp(argument, "--safety-latched") == 0) {
+      if (safety_seen) return false;
+      safety_seen = true;
+      candidate.safety_latched = true;
       continue;
     }
 
