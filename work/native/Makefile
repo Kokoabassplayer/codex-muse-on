@@ -113,8 +113,23 @@ package:
 verify-bundle: package
 	./tests/verify_bundle.sh
 
+verify-v1:
+	@set -eu; \
+	cleanup() { $(MAKE) clean; }; \
+	trap cleanup EXIT INT TERM; \
+	$(MAKE) clean; \
+	$(MAKE) test-focused; \
+	$(MAKE) test; \
+	$(MAKE) test-sanitize; \
+	$(MAKE) analyze; \
+	$(MAKE) listener; \
+	$(MAKE) verify-bundle; \
+	$(MAKE) clean; \
+	trap - EXIT INT TERM; \
+	printf '%s\n' 'Codex Muse-On v1 verification: PASS'
+
 clean:
 	rm -f $(TEST_BINARIES) $(TEST_BINARIES:%=%_san) \
 		muse_on_listener $(ANALYZER_REPORTS)
 
-.PHONY: test test-focused test-sanitize clean listener analyze package verify-bundle
+.PHONY: test test-focused test-sanitize clean listener analyze package verify-bundle verify-v1
