@@ -39,6 +39,7 @@ test: $(TEST_BINARIES)
 	./muse_on_controller_map_test
 	./muse_on_connection_observer_test
 	./muse_on_quit_policy_test
+	./muse_on_listener_completion_gate_test
 
 test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_state_coordinator_test
@@ -49,6 +50,7 @@ test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_controller_map_test
 	./muse_on_connection_observer_test
 	./muse_on_quit_policy_test
+	./muse_on_listener_completion_gate_test
 
 test-sanitize:
 	@set -eu; \
