@@ -16,6 +16,21 @@ typedef struct {
   bool connected;
 } MuseOnObservedInterface;
 
+typedef enum {
+  MUSE_ON_CONNECTION_DISCONNECTED = 0,
+  MUSE_ON_CONNECTION_SINGLE,
+  MUSE_ON_CONNECTION_MULTIPLE,
+} MuseOnConnectionState;
+
+typedef struct {
+  MuseOnConnectionState state;
+  uint32_t location_id;
+} MuseOnConnectionSnapshot;
+
+/* Classifies a complete read-only device snapshot. */
+MuseOnConnectionSnapshot muse_on_classify_connections(
+    const MuseOnObservedInterface *interfaces, size_t count);
+
 /*
  * Returns true only when exactly one physical location exposes exactly one
  * connected Muse-On keyboard interface and one connected joystick interface.

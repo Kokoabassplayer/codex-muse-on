@@ -11,6 +11,7 @@
 #include "muse_on_platform.h"
 #include "muse_on_action_map.h"
 #include "muse_on_connection.h"
+#include "muse_on_connection_observer.h"
 #include "muse_on_diagnostics.h"
 #include "muse_on_setup_state.h"
 #include "muse_on_state_coordinator.h"
@@ -876,9 +877,9 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSPopover *popover;
 @property(nonatomic, strong) MuseOnControllerMapView *controllerMapView;
+@property(nonatomic, strong) MuseOnConnectionObserver *connectionObserver;
 @property(nonatomic, strong) NSTask *listenerTask;
 @property(nonatomic, strong) NSFileHandle *listenerOutputHandle;
-@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *interfaces;
 @property(nonatomic, strong) NSMutableData *listenerOutputBuffer;
 @property(nonatomic) BOOL controllerConnected;
 @property(nonatomic) BOOL multipleControllers;
@@ -911,7 +912,16 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (void)notifySafetyLatchIfAuthorized;
 - (void)finishSafeQuit;
 - (void)refreshStatusIcon;
+- (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot;
+- (void)startConnectionObserver;
+- (void)stopConnectionObserver;
 @end
+
+static void MuseOnAppConnectionSnapshot(
+    void *context, MuseOnConnectionSnapshot snapshot) {
+  MuseOnAppDelegate *delegate = (__bridge MuseOnAppDelegate *)context;
+  [delegate applyConnectionSnapshot:snapshot];
+}
 
 @implementation MuseOnAppDelegate
 
@@ -965,36 +975,6 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       ? MUSE_ON_PROFILE_PEDAL : MUSE_ON_PROFILE_CONTROLLER_ONLY;
 }
 
-- (NSUInteger)completeControllerCount {
-  NSMutableSet<NSNumber *> *locations = [NSMutableSet set];
-  NSUInteger complete = 0;
-
-  for (NSDictionary *entry in self.interfaces.allValues) {
-    NSNumber *location = entry[@"location"];
-    if (location) [locations addObject:location];
-  }
-  for (NSNumber *location in locations) {
-    NSUInteger keyboards = 0;
-    NSUInteger joysticks = 0;
-    for (NSDictionary *entry in self.interfaces.allValues) {
-      if (![entry[@"location"] isEqual:location]) continue;
-      if ([entry[@"kind"] integerValue] == MUSE_ON_OBSERVED_KEYBOARD) {
-        keyboards++;
-      } else if ([entry[@"kind"] integerValue] == MUSE_ON_OBSERVED_JOYSTICK) {
-        joysticks++;
-      }
-    }
-    if (keyboards == 1 && joysticks == 1) complete++;
-  }
-  return complete;
-}
-
-- (void)refreshControllerObservation {
-  NSUInteger complete = [self completeControllerCount];
-  self.controllerConnected = [self hasSingleCompleteController];
-  self.multipleControllers = complete > 1;
-}
-
 - (void)sessionDidChange:(NSNotification *)notification {
   (void)notification;
   self.sessionAvailable = muse_on_session_is_available();
@@ -1016,29 +996,6 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
   [defaults setBool:_setup.enabled forKey:kEnabledIntentKey];
   [defaults setBool:_setup.start_automatically forKey:kStartAutomaticallyKey];
-}
-
-- (BOOL)hasSingleCompleteController {
-  NSArray<NSDictionary *> *observed = self.interfaces.allValues;
-  MuseOnObservedInterface *interfaces;
-  size_t count = observed.count;
-  size_t index;
-  uint32_t locationID = 0;
-  BOOL connected;
-
-  if (count == 0) return NO;
-  interfaces = calloc(count, sizeof(*interfaces));
-  if (!interfaces) return NO;
-  for (index = 0; index < count; index++) {
-    NSDictionary *entry = observed[index];
-    interfaces[index] = (MuseOnObservedInterface){
-        [entry[@"kind"] integerValue], [entry[@"location"] unsignedIntValue],
-        true};
-  }
-  connected = muse_on_find_single_complete_controller(interfaces, count,
-                                                       &locationID);
-  free(interfaces);
-  return connected;
 }
 
 - (MuseOnSafetyFailure)safetyFailureFromString:(NSString *)value {
@@ -1161,9 +1118,13 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
                    safetyFailure:self.listenerSafetyFailure];
     if (self.popover.shown) [self refreshMenu];
   } else if ([name isEqualToString:@"recovery_state"]) {
-    self.listenerRecoveryValidated = YES;
-    self.controllerConnected = [event[@"controllerConnected"] boolValue];
-    self.multipleControllers = [event[@"multipleControllers"] boolValue];
+    BOOL listenerConnected = [event[@"controllerConnected"] boolValue];
+    BOOL listenerMultiple = [event[@"multipleControllers"] boolValue];
+    /* The listener may validate ownership, but never becomes the host's
+     * connection source. A disagreement keeps Retry fail-closed. */
+    self.listenerRecoveryValidated =
+        listenerConnected == self.controllerConnected &&
+        listenerMultiple == self.multipleControllers;
     self.inputsReleased = [event[@"inputsReleased"] boolValue];
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
     self.filterVerified = [event[@"filterVerified"] boolValue];
@@ -1254,26 +1215,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     NSDictionary *event = [NSJSONSerialization JSONObjectWithData:line
                                                            options:0 error:nil];
     if (![event isKindOfClass:[NSDictionary class]]) continue;
-    NSString *name = event[@"event"];
-    NSString *interface = event[@"interface"];
-    NSNumber *location = event[@"locationID"];
     [self recordListenerEvent:event];
-    if (([name isEqualToString:@"device_added"] ||
-         [name isEqualToString:@"device_removed"]) && interface && location) {
-      MuseOnObservedInterfaceKind kind = [interface isEqualToString:@"keyboard"]
-          ? MUSE_ON_OBSERVED_KEYBOARD : MUSE_ON_OBSERVED_JOYSTICK;
-      NSString *key = [NSString stringWithFormat:@"%@:%@", interface, location];
-      if ([name isEqualToString:@"device_added"]) {
-        self.interfaces[key] = @{@"kind": @(kind), @"location": location};
-      } else {
-        [self.interfaces removeObjectForKey:key];
-      }
-      [self refreshControllerObservation];
-      self.inputsReleased = NO;
-      self.filterVerified = NO;
-      [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
-      if (self.popover.shown) [self refreshMenu];
-    }
   }
 }
 
@@ -1426,10 +1368,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   self.listenerCleanupVerified = NO;
   self.listenerSawStopped = NO;
   self.listenerSawSafetyLatch = NO;
-  self.interfaces = [NSMutableDictionary dictionary];
   self.listenerOutputBuffer = [NSMutableData data];
-  self.controllerConnected = NO;
-  self.multipleControllers = NO;
   self.inputsReleased = true;
   self.filterVerified = NO;
   NSPipe *output = [NSPipe pipe];
@@ -1487,6 +1426,29 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 
 - (void)startListenerIfNeeded {
   [self startListenerWithSafetyLatch:NO];
+}
+
+- (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot {
+  self.controllerConnected = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
+  self.multipleControllers = snapshot.state == MUSE_ON_CONNECTION_MULTIPLE;
+  [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
+  if (self.popover.shown) [self refreshMenu];
+}
+
+- (void)startConnectionObserver {
+  if (!self.primaryInstance || self.connectionObserver) return;
+  self.connectionObserver = muse_on_connection_observer_create_native(
+      MuseOnAppConnectionSnapshot, (__bridge void *)self);
+  if (![self.connectionObserver start]) {
+    self.controllerConnected = NO;
+    self.multipleControllers = NO;
+    [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
+  }
+}
+
+- (void)stopConnectionObserver {
+  [self.connectionObserver stop];
+  self.connectionObserver = nil;
 }
 
 - (void)updateCoordinatorWithCommand:(MuseOnCommand)command {
@@ -2120,6 +2082,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   }
   self.primaryInstance = YES;
   [self loadSetup];
+  [self startConnectionObserver];
   [[[NSWorkspace sharedWorkspace] notificationCenter]
       addObserver:self
          selector:@selector(sessionDidChange:)
@@ -2152,6 +2115,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   if (!self.primaryInstance) return;
+  [self stopConnectionObserver];
   [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
   muse_on_diagnostics_clear(&_diagnostics);
   if (self.lockFd >= 0) close(self.lockFd);

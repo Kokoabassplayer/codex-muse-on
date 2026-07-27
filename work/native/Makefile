@@ -9,13 +9,15 @@ TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_config_test muse_on_activation_test muse_on_shortcut_map_test \
 	muse_on_platform_test muse_on_key_filter_test muse_on_state_coordinator_test \
 	muse_on_setup_state_test muse_on_connection_test muse_on_diagnostics_test \
-	muse_on_controller_map_test
+	muse_on_controller_map_test muse_on_connection_observer_test
 FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
-	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test
+	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test \
+	muse_on_connection_observer_test
 ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
 	muse_on_key_filter.plist muse_on_state_coordinator.plist \
 	muse_on_setup_state.plist muse_on_connection.plist \
-	muse_on_diagnostics.plist muse_on_menu_bar.plist
+	muse_on_diagnostics.plist muse_on_menu_bar.plist \
+	muse_on_connection_observer.plist
 SANITIZER_FLAGS ?= -fsanitize=address,undefined
 
 test: $(TEST_BINARIES)
@@ -31,6 +33,7 @@ test: $(TEST_BINARIES)
 	./muse_on_connection_test
 	./muse_on_diagnostics_test
 	./muse_on_controller_map_test
+	./muse_on_connection_observer_test
 
 test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_state_coordinator_test
@@ -38,6 +41,7 @@ test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_key_filter_test
 	./muse_on_platform_test
 	./muse_on_controller_map_test
+	./muse_on_connection_observer_test
 
 test-sanitize:
 	@set -eu; \
@@ -83,6 +87,13 @@ muse_on_connection_test: muse_on_connection.c tests/muse_on_connection_test.c \
 	$(CC) $(CFLAGS) -I. muse_on_connection.c \
 		tests/muse_on_connection_test.c -o $@
 
+muse_on_connection_observer_test: muse_on_connection.c muse_on_connection_observer.m \
+		tests/muse_on_connection_observer_test.m muse_on_connection.h \
+		muse_on_connection_observer.h
+	$(CC) $(CFLAGS) -fobjc-arc -I. muse_on_connection.c \
+		muse_on_connection_observer.m tests/muse_on_connection_observer_test.m \
+		-framework Foundation -framework IOKit -framework CoreFoundation -o $@
+
 muse_on_diagnostics_test: muse_on_diagnostics.c tests/muse_on_diagnostics_test.c \
 		muse_on_diagnostics.h muse_on_state_coordinator.h muse_on_action_map.h
 	$(CC) $(CFLAGS) -I. muse_on_diagnostics.c muse_on_state_coordinator.c \
@@ -104,6 +115,7 @@ analyze:
 	$(CC) --analyze $(CFLAGS) -I. muse_on_state_coordinator.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_setup_state.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_connection.c
+	$(CC) --analyze $(CFLAGS) -fobjc-arc -I. muse_on_connection_observer.m
 	$(CC) --analyze $(CFLAGS) -I. muse_on_diagnostics.c
 	$(CC) --analyze $(CFLAGS) -fobjc-arc -I. muse_on_menu_bar.m
 
