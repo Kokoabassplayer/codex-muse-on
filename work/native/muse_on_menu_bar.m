@@ -13,6 +13,7 @@
 #include "muse_on_connection.h"
 #include "muse_on_connection_observer.h"
 #include "muse_on_diagnostics.h"
+#include "muse_on_listener_completion_gate.h"
 #include "muse_on_quit_policy.h"
 #include "muse_on_setup_state.h"
 #include "muse_on_state_coordinator.h"
@@ -894,6 +895,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) BOOL listenerRecoveryFailed;
 @property(nonatomic) BOOL listenerCleanupVerified;
 @property(nonatomic) BOOL listenerSawStopped;
+@property(nonatomic) BOOL listenerSawFilterRestored;
+@property(nonatomic) BOOL listenerSawFilterApplied;
 @property(nonatomic) BOOL listenerSawSafetyLatch;
 @property(nonatomic) BOOL listenerPermissionRequired;
 @property(nonatomic) BOOL permissionStateAuthoritative;
@@ -912,6 +915,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) MuseOnSetupState setup;
 @property(nonatomic) MuseOnState coordinator;
 @property(nonatomic) MuseOnProfile profile;
+@property(nonatomic) MuseOnListenerCompletionGate listenerCompletionGate;
 @property(nonatomic, copy) NSString *selectedControlIdentifier;
 @property(nonatomic) BOOL textEquivalentExpanded;
 @property(nonatomic) int lockFd;
@@ -1182,6 +1186,7 @@ static void MuseOnAppConnectionSnapshot(
     }
     if (event[@"keyFilterApplied"]) {
       self.filterVerified = [event[@"keyFilterApplied"] boolValue];
+      if (self.filterVerified) self.listenerSawFilterApplied = YES;
     }
     muse_on_diagnostics_record_listener_ready(&_diagnostics);
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
@@ -1191,8 +1196,10 @@ static void MuseOnAppConnectionSnapshot(
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
     self.filterVerified = [event[@"keyFilterApplied"] boolValue];
+    if (self.filterVerified) self.listenerSawFilterApplied = YES;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_restored"]) {
+    self.listenerSawFilterRestored = YES;
     self.filterVerified = NO;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"neutral_entry"]) {
@@ -1352,6 +1359,79 @@ static void MuseOnAppConnectionSnapshot(
   }
 }
 
+- (void)finalizeListenerIfReady {
+  MuseOnListenerCompletionResult result;
+  MuseOnListenerTerminationReason terminationReason;
+  MuseOnDiagnosticTerminationReason diagnosticReason;
+  BOOL hasTerminationFailure;
+  BOOL cleanupVerified;
+  ListenerStopPurpose purpose;
+
+  if (self.listenerTask == nil) return;
+  result = muse_on_listener_completion_gate_try_finalize(
+      &_listenerCompletionGate,
+      self.listenerRecoveryMode && !self.listenerPermissionRequired,
+      self.listenerRecoveryValidated && !self.listenerRecoveryFailed,
+      self.listenerSawFilterRestored || !self.listenerSawFilterApplied ||
+          self.listenerPermissionRequired,
+      self.listenerSawStopped, self.listenerCleanupVerified,
+      self.listenerSawSafetyLatch);
+  if (result == MUSE_ON_LISTENER_COMPLETION_WAITING) return;
+
+  terminationReason = _listenerCompletionGate.termination_reason;
+  diagnosticReason =
+      terminationReason == MUSE_ON_LISTENER_TERMINATION_EXIT
+          ? MUSE_ON_DIAGNOSTIC_TERMINATION_EXIT
+          : (terminationReason == MUSE_ON_LISTENER_TERMINATION_SIGNAL
+                 ? MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL
+                 : MUSE_ON_DIAGNOSTIC_TERMINATION_UNKNOWN);
+  cleanupVerified = result == MUSE_ON_LISTENER_COMPLETION_ACCEPTED;
+  hasTerminationFailure =
+      _listenerCompletionGate.termination_status != 0 ||
+      diagnosticReason == MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL ||
+      result == MUSE_ON_LISTENER_COMPLETION_FAIL_CLOSED ||
+      self.listenerSawSafetyLatch || self.diagnostics.listener.has_error;
+  if (hasTerminationFailure) {
+    muse_on_diagnostics_record_listener_termination(
+        &_diagnostics, diagnosticReason,
+        _listenerCompletionGate.termination_status,
+        diagnosticReason == MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL,
+        _listenerCompletionGate.termination_status);
+  }
+  if (!cleanupVerified && !self.listenerSawSafetyLatch) {
+    self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+  }
+  purpose = self.listenerStopPurpose;
+  if (purpose != kListenerStopNone) {
+    self.listenerCleanupKnown = cleanupVerified;
+  }
+  self.listenerTask = nil;
+  [self handleListenerTerminationForPurpose:purpose
+                           cleanupVerified:cleanupVerified];
+}
+
+- (void)processListenerOutputEOFForTask:(NSTask *)task {
+  if (self.listenerTask != task) return;
+  self.listenerOutputHandle.readabilityHandler = nil;
+  muse_on_listener_completion_gate_mark_stdout_eof(
+      &_listenerCompletionGate);
+  [self finalizeListenerIfReady];
+}
+
+- (void)processListenerTerminationForTask:(NSTask *)finishedTask {
+  MuseOnListenerTerminationReason reason;
+
+  if (self.listenerTask != finishedTask) return;
+  reason = finishedTask.terminationReason == NSTaskTerminationReasonExit
+      ? MUSE_ON_LISTENER_TERMINATION_EXIT
+      : (finishedTask.terminationReason == NSTaskTerminationReasonUncaughtSignal
+             ? MUSE_ON_LISTENER_TERMINATION_SIGNAL
+             : MUSE_ON_LISTENER_TERMINATION_UNKNOWN);
+  muse_on_listener_completion_gate_mark_termination(
+      &_listenerCompletionGate, reason, finishedTask.terminationStatus);
+  [self finalizeListenerIfReady];
+}
+
 - (void)handleListenerTerminationForPurpose:(ListenerStopPurpose)purpose
                             cleanupVerified:(BOOL)cleanupVerified {
   BOOL recoveryMode = self.listenerRecoveryMode;
@@ -1360,11 +1440,6 @@ static void MuseOnAppConnectionSnapshot(
   if (purpose == kListenerStopForRetry && recoveryMode &&
       (self.listenerRecoveryFailed || !self.listenerRecoveryValidated)) {
     cleanupVerified = NO;
-  }
-  if (!cleanupVerified && failure == MUSE_ON_SAFETY_FAILURE_NONE) {
-    if (self.listenerPermissionRequired) {
-      cleanupVerified = YES;
-    }
   }
   if (!cleanupVerified && failure == MUSE_ON_SAFETY_FAILURE_NONE) {
     failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
@@ -1403,7 +1478,7 @@ static void MuseOnAppConnectionSnapshot(
           !self.quitInFlight) {
         self.listenerStopPurpose = kListenerStopForRetry;
         [self startListenerWithSafetyLatch:YES];
-      } else if (self.listenerPermissionRequired) {
+      } else if (self.listenerPermissionRequired && cleanupVerified) {
         [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
                      cleanupVerified:YES
                        safetyFailure:MUSE_ON_SAFETY_FAILURE_NONE];
@@ -1466,7 +1541,7 @@ static void MuseOnAppConnectionSnapshot(
       }
       break;
     case kListenerStopNone:
-      if (self.listenerPermissionRequired) {
+      if (self.listenerPermissionRequired && cleanupVerified) {
         self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_NONE;
         [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
                      cleanupVerified:YES
@@ -1531,9 +1606,12 @@ static void MuseOnAppConnectionSnapshot(
   self.listenerRecoveryFailed = NO;
   self.listenerCleanupVerified = NO;
   self.listenerSawStopped = NO;
+  self.listenerSawFilterRestored = NO;
+  self.listenerSawFilterApplied = NO;
   self.listenerSawSafetyLatch = NO;
   self.listenerPermissionRequired = NO;
   self.listenerOutputBuffer = [NSMutableData data];
+  muse_on_listener_completion_gate_init(&_listenerCompletionGate);
   /* Listener startup is not Neutral Entry evidence. Keep the host fail-closed
    * until every selected-profile control has reported released. */
   MuseOnPrerequisites startupPrerequisites = {0};
@@ -1544,66 +1622,30 @@ static void MuseOnAppConnectionSnapshot(
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   NSPipe *output = [NSPipe pipe];
   task.standardOutput = output;
+  self.listenerTask = task;
   __weak MuseOnAppDelegate *weakSelf = self;
+  NSTask *listenerInstance = task;
   output.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
     NSData *data = handle.availableData;
     if (data.length == 0) {
-      handle.readabilityHandler = nil;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf processListenerOutputEOFForTask:listenerInstance];
+      });
       return;
     }
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (weakSelf.listenerTask != listenerInstance) return;
       [weakSelf consumeListenerData:data];
     });
   };
   self.listenerOutputHandle = output.fileHandleForReading;
   task.terminationHandler = ^(NSTask *finishedTask) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      BOOL cleanupVerified;
-      ListenerStopPurpose purpose;
-
-      if (weakSelf.listenerTask != finishedTask) return;
-      weakSelf.listenerOutputHandle.readabilityHandler = nil;
-      NSData *remaining = [weakSelf.listenerOutputHandle availableData];
-      if (remaining.length > 0) [weakSelf consumeListenerData:remaining];
-      NSTaskTerminationReason terminationReason = finishedTask.terminationReason;
-      MuseOnDiagnosticTerminationReason diagnosticReason =
-          terminationReason == NSTaskTerminationReasonExit
-              ? MUSE_ON_DIAGNOSTIC_TERMINATION_EXIT
-              : (terminationReason == NSTaskTerminationReasonUncaughtSignal
-                     ? MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL
-                     : MUSE_ON_DIAGNOSTIC_TERMINATION_UNKNOWN);
-      BOOL hasTerminationFailure = finishedTask.terminationStatus != 0 ||
-                                   diagnosticReason ==
-                                       MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL ||
-                                   weakSelf.listenerSawSafetyLatch ||
-                                   weakSelf.diagnostics.listener.has_error;
-      if (hasTerminationFailure) {
-        MuseOnAppDelegate *strongSelf = weakSelf;
-        if (!strongSelf) return;
-        muse_on_diagnostics_record_listener_termination(
-            &strongSelf->_diagnostics, diagnosticReason,
-            finishedTask.terminationStatus,
-            diagnosticReason == MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL,
-            finishedTask.terminationStatus);
-      }
-      cleanupVerified = weakSelf.listenerSawStopped &&
-                        weakSelf.listenerCleanupVerified;
-      if (finishedTask.terminationStatus != 0) cleanupVerified = NO;
-      if (!cleanupVerified && !weakSelf.listenerSawSafetyLatch) {
-        weakSelf.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
-      }
-      purpose = weakSelf.listenerStopPurpose;
-      if (purpose != kListenerStopNone) {
-        weakSelf.listenerCleanupKnown = cleanupVerified;
-      }
-      weakSelf.listenerTask = nil;
-      [weakSelf handleListenerTerminationForPurpose:purpose
-                                   cleanupVerified:cleanupVerified];
+      [weakSelf processListenerTerminationForTask:finishedTask];
     });
   };
   @try {
     [task launch];
-    self.listenerTask = task;
     self.listenerEverStarted = YES;
     self.listenerCleanupKnown = NO;
   } @catch (__unused NSException *exception) {
