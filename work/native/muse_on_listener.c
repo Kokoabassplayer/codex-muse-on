@@ -119,6 +119,29 @@ static void emit_safety_latch(ListenerState *state,
          muse_on_safety_failure_string(state->safetyFailure));
 }
 
+static void emit_permission_required(ListenerState *state, const char *gate) {
+  if (!state) return;
+  if (gate && strcmp(gate, "input_monitoring") == 0) {
+    state->inputMonitoringAccess = false;
+  } else if (gate && strcmp(gate, "accessibility") == 0) {
+    state->postEventAccess = false;
+  }
+  printf("{\"event\":\"permission_required\","
+         "\"reason\":\"permission_required\",\"gate\":\"%s\","
+         "\"inputMonitoring\":%s,\"accessibility\":%s,"
+         "\"dispatchAllowed\":false}\n",
+         gate ? gate : "unknown", boolean_string(state->inputMonitoringAccess),
+         boolean_string(state->postEventAccess));
+}
+
+static void emit_stopped(const ListenerState *state) {
+  printf("{\"event\":\"stopped\",\"releaseFailed\":%s,"
+         "\"safetyReason\":\"%s\"}\n",
+         boolean_string(state && state->releaseFailed),
+         muse_on_safety_failure_string(
+             state ? state->safetyFailure : MUSE_ON_SAFETY_FAILURE_NONE));
+}
+
 static const char *interface_name(InterfaceKind kind) {
   switch (kind) {
     case kInterfaceKeyboard: return "keyboard";
@@ -430,6 +453,11 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
   MuseOnShortcutInstruction shortcut;
   bool posted;
 
+  if (state->config.mode == MUSE_ON_MODE_ACTIVE &&
+      !filter_permissions_ready(state)) {
+    return;
+  }
+
   frontmost = state->config.mode == MUSE_ON_MODE_DRY_RUN
       ? false
       : muse_on_codex_is_frontmost();
@@ -506,6 +534,8 @@ static bool routing_is_enabled(ListenerState *state) {
 
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return true;
   if (state->config.safety_latched) return false;
+  if (state->config.mode == MUSE_ON_MODE_ACTIVE &&
+      !filter_permissions_ready(state)) return false;
   if (!validated_controller_location(state, &controllerLocation)) return false;
   for (DeviceSlot *slot = state->slots; slot; slot = slot->next) {
     if (!slot->removed && slot->locationID == controllerLocation &&
@@ -998,28 +1028,28 @@ int main(int argc, char *argv[]) {
   inputAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
   printf("{\"event\":\"tcc_status\",\"inputMonitoring\":\"%s\"}\n",
          access_name(inputAccess));
-  if (inputAccess == kIOHIDAccessTypeUnknown) {
-    bool granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
-    inputAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
-    printf("{\"event\":\"tcc_request\",\"permission\":\"input_monitoring\","
-           "\"granted\":%s,\"access\":\"%s\"}\n",
-           boolean_string(granted), access_name(inputAccess));
-  }
   if (inputAccess != kIOHIDAccessTypeGranted) {
     printf("{\"event\":\"warning\",\"operation\":\"input_monitoring\","
-           "\"action\":\"grant_in_settings_then_restart\"}\n");
+           "\"action\":\"grant_in_settings_then_retry\"}\n");
   }
   state.inputMonitoringAccess = inputAccess == kIOHIDAccessTypeGranted;
 
   if (state.config.mode == MUSE_ON_MODE_ACTIVE) {
     state.postEventAccess = muse_on_preflight_post_event_access();
-    if (!state.postEventAccess) {
-      state.postEventAccess = muse_on_request_post_event_access();
-    }
     printf("{\"event\":\"tcc_status\",\"accessibility\":%s}\n",
            boolean_string(state.postEventAccess));
   }
   state.permissionsKnown = true;
+
+  if (state.config.mode == MUSE_ON_MODE_ACTIVE &&
+      !filter_permissions_ready(&state)) {
+    emit_permission_required(&state,
+                             !state.inputMonitoringAccess
+                                 ? "input_monitoring"
+                                 : "accessibility");
+    emit_stopped(&state);
+    return 0;
+  }
 
   state.runLoop = CFRunLoopGetCurrent();
   state.joystickContext.state = &state;
@@ -1039,6 +1069,11 @@ int main(int argc, char *argv[]) {
 
   opened = IOHIDManagerOpen(state.joystickManager, kIOHIDOptionsTypeNone);
   if (opened != kIOReturnSuccess) {
+    if (muse_on_listener_error_is_permission_required(
+            "open_joystick_manager", opened)) {
+      emit_permission_required(&state, "input_monitoring");
+      goto shutdown;
+    }
     emit_error("open_joystick_manager", opened);
     muse_on_key_filter_destroy(state.keyFilter);
     unschedule_and_release_manager(&state, state.keyboardManager);
@@ -1048,6 +1083,12 @@ int main(int argc, char *argv[]) {
 
   opened = IOHIDManagerOpen(state.keyboardManager, kIOHIDOptionsTypeNone);
   if (opened != kIOReturnSuccess) {
+    if (muse_on_listener_error_is_permission_required(
+            "open_keyboard_manager", opened)) {
+      emit_permission_required(&state, "input_monitoring");
+      IOHIDManagerClose(state.joystickManager, kIOHIDOptionsTypeNone);
+      goto shutdown;
+    }
     emit_error("open_keyboard_manager", opened);
     IOHIDManagerClose(state.joystickManager, kIOHIDOptionsTypeNone);
     muse_on_key_filter_destroy(state.keyFilter);
@@ -1083,6 +1124,7 @@ int main(int argc, char *argv[]) {
     CFRelease(timer);
   }
 
+shutdown:
   restore_keyboard_filter(&state, "process_exit");
   if (state.keyboardOpen) {
     IOReturn keyboardClosed =
@@ -1113,10 +1155,7 @@ int main(int argc, char *argv[]) {
       state.safetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
     emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
   }
-  printf("{\"event\":\"stopped\",\"releaseFailed\":%s,"
-         "\"safetyReason\":\"%s\"}\n",
-         boolean_string(state.releaseFailed),
-         muse_on_safety_failure_string(state.safetyFailure));
+  emit_stopped(&state);
   if (state.releaseFailed) return 3;
   return exitCode;
 }

@@ -894,6 +894,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) BOOL listenerCleanupVerified;
 @property(nonatomic) BOOL listenerSawStopped;
 @property(nonatomic) BOOL listenerSawSafetyLatch;
+@property(nonatomic) BOOL listenerPermissionRequired;
 @property(nonatomic) MuseOnSafetyFailure listenerSafetyFailure;
 @property(nonatomic) ListenerStopPurpose listenerStopPurpose;
 @property(nonatomic) BOOL quitInFlight;
@@ -957,12 +958,14 @@ static void MuseOnAppConnectionSnapshot(
   muse_on_state_init(&_coordinator);
   muse_on_diagnostics_init(&_diagnostics);
   _sessionAvailable = muse_on_session_is_available();
-  _permissionGranted = muse_on_preflight_post_event_access();
+  _permissionGranted = muse_on_input_monitoring_access_granted() &&
+                        muse_on_preflight_post_event_access();
   _inputsReleased = true;
   _filterVerified = true;
   _listenerRecoveryValidated = NO;
   _listenerEverStarted = NO;
   _listenerCleanupKnown = NO;
+  _listenerPermissionRequired = NO;
   [defaults setBool:NO forKey:kSafeQuitVerifiedKey];
   _listenerSafetyFailure = previousExitWasUnclean &&
                            (_setup.enabled || disablePending)
@@ -991,7 +994,7 @@ static void MuseOnAppConnectionSnapshot(
   }
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   if (self.sessionAvailable && self.listenerTask == nil &&
-      _setup.enabled && !_coordinator.safety_latched) {
+      _setup.enabled && !_coordinator.safety_latched && self.permissionGranted) {
     [self startListenerIfNeeded];
   }
   if (self.popover.shown) [self refreshMenu];
@@ -1023,6 +1026,15 @@ static void MuseOnAppConnectionSnapshot(
   const char *raw = operation.UTF8String;
   MuseOnDiagnosticErrorCode error = MUSE_ON_DIAGNOSTIC_ERROR_DEVICE_UNCERTAIN;
   int64_t code = codeValue ? codeValue.longLongValue : 0;
+
+  if (muse_on_listener_error_is_permission_required(raw, (int32_t)code)) {
+    self.permissionGranted = NO;
+    self.listenerPermissionRequired = YES;
+    [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                 cleanupVerified:YES
+                   safetyFailure:MUSE_ON_SAFETY_FAILURE_NONE];
+    return;
+  }
 
   if (raw && (strcmp(raw, "restore_keyboard_filter") == 0 ||
       strcmp(raw, "rollback_keyboard_filter") == 0 ||
@@ -1066,7 +1078,19 @@ static void MuseOnAppConnectionSnapshot(
   NSString *operation = event[@"operation"];
   NSString *safetyReason = event[@"reason"];
 
-  if ([name isEqualToString:@"tcc_status"]) {
+  if ([name isEqualToString:@"permission_required"]) {
+    self.listenerPermissionRequired = YES;
+    self.permissionGranted = NO;
+    self.inputsReleased = NO;
+    if (!_coordinator.safety_latched) {
+      self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_NONE;
+    }
+    [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                 cleanupVerified:YES
+                   safetyFailure:MUSE_ON_SAFETY_FAILURE_NONE];
+    if (self.popover.shown) [self refreshMenu];
+  } else if ([name isEqualToString:@"tcc_status"] ||
+             [name isEqualToString:@"permissions_changed"]) {
     NSString *inputMonitoring = event[@"inputMonitoring"];
     NSNumber *accessibility = event[@"accessibility"];
     if (inputMonitoring) {
@@ -1074,6 +1098,7 @@ static void MuseOnAppConnectionSnapshot(
           [inputMonitoring isEqualToString:@"granted"];
     }
     if (accessibility) self.permissionGranted &= accessibility.boolValue;
+    if (!self.permissionGranted) self.inputsReleased = NO;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"ready"]) {
     /* Ready confirms listener setup; it does not prove that an earlier
@@ -1241,6 +1266,11 @@ static void MuseOnAppConnectionSnapshot(
     cleanupVerified = NO;
   }
   if (!cleanupVerified && failure == MUSE_ON_SAFETY_FAILURE_NONE) {
+    if (self.listenerPermissionRequired) {
+      cleanupVerified = YES;
+    }
+  }
+  if (!cleanupVerified && failure == MUSE_ON_SAFETY_FAILURE_NONE) {
     failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
     self.listenerSafetyFailure = failure;
   }
@@ -1336,10 +1366,17 @@ static void MuseOnAppConnectionSnapshot(
       }
       break;
     case kListenerStopNone:
-      if (cleanupVerified) failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
-      [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
-                   cleanupVerified:cleanupVerified
-                     safetyFailure:failure];
+      if (self.listenerPermissionRequired) {
+        self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_NONE;
+        [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                     cleanupVerified:YES
+                       safetyFailure:MUSE_ON_SAFETY_FAILURE_NONE];
+      } else {
+        if (cleanupVerified) failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+        [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                     cleanupVerified:cleanupVerified
+                       safetyFailure:failure];
+      }
       break;
   }
   if (self.popover.shown) [self refreshMenu];
@@ -1351,6 +1388,7 @@ static void MuseOnAppConnectionSnapshot(
     self.listenerStopPurpose = kListenerStopNone;
     self.listenerRecoveryMode = NO;
     self.listenerRecoveryValidated = NO;
+    self.listenerPermissionRequired = NO;
   } else if (!self.listenerRecoveryMode) {
     self.listenerStopPurpose = kListenerStopNone;
     self.listenerRecoveryValidated = NO;
@@ -1363,7 +1401,8 @@ static void MuseOnAppConnectionSnapshot(
   NSMutableArray<NSString *> *arguments;
   if (self.listenerTask != nil ||
       (!safetyLatched && (!_setup.enabled || _coordinator.safety_latched ||
-                          _coordinator.disable_pending))) return;
+                          _coordinator.disable_pending ||
+                          !self.permissionGranted))) return;
   muse_on_diagnostics_reset_listener(&_diagnostics);
   path = [[NSBundle mainBundle] pathForAuxiliaryExecutable:@"muse_on_listener"];
   if (!path) {
@@ -1385,6 +1424,7 @@ static void MuseOnAppConnectionSnapshot(
   self.listenerCleanupVerified = NO;
   self.listenerSawStopped = NO;
   self.listenerSawSafetyLatch = NO;
+  self.listenerPermissionRequired = NO;
   self.listenerOutputBuffer = [NSMutableData data];
   self.inputsReleased = true;
   self.filterVerified = NO;
@@ -1531,6 +1571,9 @@ static void MuseOnAppConnectionSnapshot(
                                         muse_on_safety_failure_string(
                                             _coordinator.safety_failure)];
     case MUSE_ON_STATUS_INACTIVE:
+      if (_coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_PERMISSION) {
+        return @"Permission required — enable Input Monitoring and Accessibility in Settings.";
+      }
       return [NSString stringWithUTF8String:muse_on_inactive_reason_string(
           _coordinator.inactive_reason)];
   }
@@ -1954,6 +1997,11 @@ static void MuseOnAppConnectionSnapshot(
   [self saveSetup];
   if (isFirstEnable) {
     [defaults setBool:YES forKey:kFirstEnableCompletedKey];
+    if (muse_on_should_request_input_monitoring(
+            isFirstEnable, muse_on_input_monitoring_access_unknown(),
+            NO)) {
+      (void)muse_on_request_input_monitoring_access();
+    }
     if (!muse_on_preflight_post_event_access()) (void)muse_on_request_post_event_access();
     if (@available(macOS 10.14, *)) {
       [[UNUserNotificationCenter currentNotificationCenter]
@@ -1961,6 +2009,8 @@ static void MuseOnAppConnectionSnapshot(
                          completionHandler:^(__unused BOOL granted,
                                              __unused NSError *error) {}];
     }
+    self.permissionGranted = muse_on_input_monitoring_access_granted() &&
+                             muse_on_preflight_post_event_access();
   }
   [self applyStartupPreference];
   [self startListenerIfNeeded];
@@ -2069,7 +2119,15 @@ static void MuseOnAppConnectionSnapshot(
   } else if (_coordinator.safety_latched) {
     self.listenerStopPurpose = kListenerStopForRetry;
   } else {
+    BOOL hadPermission = self.permissionGranted;
+    self.permissionGranted = muse_on_input_monitoring_access_granted() &&
+                             muse_on_preflight_post_event_access();
+    if (!hadPermission && self.permissionGranted) self.inputsReleased = NO;
     [self refreshMenuWithCommand:MUSE_ON_COMMAND_RETRY];
+    if (self.permissionGranted && _setup.enabled &&
+        !_coordinator.safety_latched && self.listenerTask == nil) {
+      [self startListenerIfNeeded];
+    }
     return;
   }
   if (self.listenerTask) {
@@ -2212,7 +2270,7 @@ static void MuseOnAppConnectionSnapshot(
   self.popover = [[NSPopover alloc] init];
   self.popover.behavior = NSPopoverBehaviorTransient;
   [self refreshMenu];
-  if (_setup.enabled && !_coordinator.safety_latched) {
+  if (_setup.enabled && !_coordinator.safety_latched && self.permissionGranted) {
     [self startListenerIfNeeded];
   }
 }

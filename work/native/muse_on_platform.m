@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
+#import <IOKit/IOReturn.h>
+#import <IOKit/hidsystem/IOHIDLib.h>
 
 #include <string.h>
 
@@ -48,6 +50,34 @@ bool muse_on_preflight_post_event_access(void) {
 
 bool muse_on_request_post_event_access(void) {
   return CGRequestPostEventAccess();
+}
+
+bool muse_on_input_monitoring_access_granted(void) {
+  return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) ==
+         kIOHIDAccessTypeGranted;
+}
+
+bool muse_on_input_monitoring_access_unknown(void) {
+  return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) ==
+         kIOHIDAccessTypeUnknown;
+}
+
+bool muse_on_request_input_monitoring_access(void) {
+  return IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+}
+
+bool muse_on_should_request_input_monitoring(bool first_enable,
+                                             bool access_unknown,
+                                             bool request_already_attempted) {
+  return first_enable && access_unknown && !request_already_attempted;
+}
+
+bool muse_on_listener_error_is_permission_required(const char *operation,
+                                                  int32_t code) {
+  return operation != NULL &&
+         (strcmp(operation, "open_joystick_manager") == 0 ||
+          strcmp(operation, "open_keyboard_manager") == 0) &&
+         code == kIOReturnNotPermitted;
 }
 
 static void muse_on_configure_hyper_key_event(CGEventRef event,

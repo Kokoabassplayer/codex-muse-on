@@ -10,10 +10,11 @@ TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_platform_test muse_on_key_filter_test muse_on_state_coordinator_test \
 	muse_on_setup_state_test muse_on_connection_test muse_on_diagnostics_test \
 	muse_on_controller_map_test muse_on_connection_observer_test \
-	muse_on_quit_policy_test
+	muse_on_quit_policy_test muse_on_permission_test
 FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
 	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test \
-	muse_on_connection_observer_test muse_on_quit_policy_test
+	muse_on_connection_observer_test muse_on_quit_policy_test \
+	muse_on_permission_test
 ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
 	muse_on_key_filter.plist muse_on_state_coordinator.plist \
 	muse_on_setup_state.plist muse_on_connection.plist \
@@ -28,6 +29,7 @@ test: $(TEST_BINARIES)
 	./muse_on_activation_test
 	./muse_on_shortcut_map_test
 	./muse_on_platform_test
+	./muse_on_permission_test
 	./muse_on_key_filter_test
 	./muse_on_state_coordinator_test
 	./muse_on_setup_state_test
@@ -42,6 +44,7 @@ test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_connection_test
 	./muse_on_key_filter_test
 	./muse_on_platform_test
+	./muse_on_permission_test
 	./muse_on_controller_map_test
 	./muse_on_connection_observer_test
 	./muse_on_quit_policy_test
@@ -69,7 +72,12 @@ muse_on_shortcut_map_test: muse_on_shortcut_map.c tests/muse_on_shortcut_map_tes
 
 muse_on_platform_test: muse_on_platform.m tests/muse_on_platform_test.m muse_on_platform.h muse_on_shortcut_map.h
 	$(CC) $(CFLAGS) -I. muse_on_platform.m tests/muse_on_platform_test.m \
-		$(PLATFORM_FRAMEWORKS) -o $@
+		$(PLATFORM_FRAMEWORKS) $(HID_FRAMEWORKS) -o $@
+
+muse_on_permission_test: muse_on_platform.m muse_on_state_coordinator.c tests/muse_on_permission_test.c muse_on_platform.h muse_on_shortcut_map.h muse_on_state_coordinator.h
+	$(CC) $(CFLAGS) -I. muse_on_platform.m muse_on_state_coordinator.c \
+		tests/muse_on_permission_test.c \
+		$(PLATFORM_FRAMEWORKS) $(HID_FRAMEWORKS) -o $@
 
 muse_on_key_filter_test: muse_on_key_filter.c tests/muse_on_key_filter_test.c muse_on_key_filter.h
 	$(CC) $(CFLAGS) -I. muse_on_key_filter.c tests/muse_on_key_filter_test.c \

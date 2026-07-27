@@ -23,6 +23,14 @@ bool muse_on_codex_is_frontmost(void);
 bool muse_on_session_is_available(void);
 bool muse_on_preflight_post_event_access(void);
 bool muse_on_request_post_event_access(void);
+bool muse_on_input_monitoring_access_granted(void);
+bool muse_on_input_monitoring_access_unknown(void);
+bool muse_on_request_input_monitoring_access(void);
+bool muse_on_should_request_input_monitoring(bool first_enable,
+                                             bool access_unknown,
+                                             bool request_already_attempted);
+bool muse_on_listener_error_is_permission_required(const char *operation,
+                                                  int32_t code);
 size_t muse_on_hyper_key_event_sequence(uint16_t mac_virtual_key,
                                         MuseOnPostHyperKeyPhase phase,
                                         MuseOnHyperKeyEvent *events,
