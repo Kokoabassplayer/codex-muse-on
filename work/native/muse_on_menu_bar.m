@@ -935,6 +935,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
                                   snapshot:(MuseOnConnectionSnapshot *)snapshot;
 - (void)recordListenerProtocolFailure;
 - (void)syncTopologyHostState;
+- (void)requireNeutralEntry;
 - (void)updatePermissionStateFromEvent:(NSDictionary *)event;
 @end
 
@@ -1019,7 +1020,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   self.permissionStateAuthoritative = NO;
   self.retryPermissionPending = NO;
   self.retryPermissionDestinationOpened = NO;
-  _inputsReleased = NO;
+  [self requireNeutralEntry];
   _controllerLocationID = 0;
   _filterVerified = true;
   _listenerRecoveryValidated = NO;
@@ -1046,7 +1047,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (void)sessionDidChange:(NSNotification *)notification {
   (void)notification;
   self.sessionAvailable = muse_on_session_is_available();
-  self.inputsReleased = NO;
+  [self requireNeutralEntry];
   if (!self.sessionAvailable && self.listenerTask &&
       !self.listenerRecoveryMode &&
       self.listenerStopPurpose == kListenerStopNone) {
@@ -1145,6 +1146,11 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   self.filterVerified = _topologyHostState.filter_verified;
 }
 
+- (void)requireNeutralEntry {
+  muse_on_topology_host_require_neutral_entry(&_topologyHostState);
+  [self syncTopologyHostState];
+}
+
 - (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
                                   snapshot:(MuseOnConnectionSnapshot *)snapshot {
   NSString *stateName = event[@"state"];
@@ -1195,7 +1201,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     self.controllerConnected = NO;
     self.multipleControllers = NO;
     self.controllerLocationID = 0;
-    self.inputsReleased = NO;
+    [self requireNeutralEntry];
     self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
     self.listenerSawSafetyLatch = YES;
     [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
@@ -1258,7 +1264,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       [self openPermissionSettingsForGate:gate];
       self.retryPermissionDestinationOpened = YES;
     }
-    self.inputsReleased = NO;
+    [self requireNeutralEntry];
     if (!_coordinator.safety_latched) {
       self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_NONE;
     }
@@ -1274,7 +1280,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       [self updatePermissionStateFromEvent:event];
     }
     if (self.permissionGranted) self.retryPermissionPending = NO;
-    if (!self.permissionGranted) self.inputsReleased = NO;
+    if (!self.permissionGranted) [self requireNeutralEntry];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"ready"]) {
     /* Ready confirms listener setup; it does not prove that an earlier
@@ -1293,7 +1299,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"focus_changed"]) {
     self.codexForeground = [event[@"codexFrontmost"] boolValue];
-    if (!self.codexForeground) self.inputsReleased = NO;
+    if (!self.codexForeground) [self requireNeutralEntry];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
     self.filterVerified = [event[@"keyFilterApplied"] boolValue];
@@ -1371,10 +1377,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
      * compared with a second host-owned HID observation. */
     self.listenerRecoveryValidated = _topologyHostState.recovery_validated;
     self.listenerRecoveryFailed = _topologyHostState.recovery_failed;
-    self.inputsReleased = _topologyHostState.inputs_released;
     self.permissionGranted = _topologyHostState.permission_granted;
     if (self.permissionGranted) self.retryPermissionPending = NO;
-    self.filterVerified = _topologyHostState.filter_verified;
     self.codexForeground = [event[@"codexForeground"] boolValue];
     if (recoveryFailed) {
       MuseOnSafetyFailure reportedFailure = [self safetyFailureFromString:
@@ -1743,11 +1747,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   muse_on_listener_completion_gate_init(&_listenerCompletionGate);
   /* Listener startup is not Neutral Entry evidence. Keep the host fail-closed
    * until every selected-profile control has reported released. */
-  MuseOnPrerequisites startupPrerequisites = {0};
-  startupPrerequisites.inputs_released = self.inputsReleased;
-  muse_on_neutral_entry_require(&startupPrerequisites);
-  self.inputsReleased = startupPrerequisites.inputs_released;
-  self.filterVerified = NO;
+  [self requireNeutralEntry];
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   NSPipe *output = [NSPipe pipe];
   task.standardOutput = output;
@@ -2336,7 +2336,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   [[NSUserDefaults standardUserDefaults] setObject:
       (_profile == MUSE_ON_PROFILE_PEDAL ? @"pedal" : @"controller-only")
                                          forKey:kControlProfileKey];
-  self.inputsReleased = NO;
+  [self requireNeutralEntry];
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   if (self.listenerTask) {
     self.listenerStopPurpose = kListenerStopForProfile;
@@ -2408,10 +2408,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   } else if (_coordinator.safety_latched) {
     self.listenerStopPurpose = kListenerStopForRetry;
   } else {
-    MuseOnPrerequisites retryPrerequisites = {0};
-    retryPrerequisites.inputs_released = self.inputsReleased;
-    muse_on_neutral_entry_require(&retryPrerequisites);
-    self.inputsReleased = retryPrerequisites.inputs_released;
+    [self requireNeutralEntry];
     [self refreshMenuWithCommand:MUSE_ON_COMMAND_RETRY];
     if (_setup.enabled && !_coordinator.safety_latched &&
         self.listenerTask == nil) {

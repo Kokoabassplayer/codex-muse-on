@@ -146,8 +146,50 @@ static void test_typed_recovery_pending_requires_fresh_neutral_entry(void) {
   assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
   assert(!coordinator.effects.request_dispatch);
 
-  /* Only the fresh neutral-entry observation can make this Active. */
-  host.inputs_released = true;
+  /* Only a fresh listener generation's neutral-entry observation can make
+   * this Active. */
+  muse_on_topology_host_begin(&host, 5, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 5, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x440000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 5, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(coordinator.effects.request_dispatch);
+}
+
+static void test_focus_loss_requires_fresh_neutral_entry(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
+
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 6, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 6, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x660000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 6, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(coordinator.effects.request_dispatch);
+
+  /* Focus loss resets the host's release prerequisite. Returning focus does
+   * not release it; only a fresh listener Neutral Entry may do so. */
+  muse_on_topology_host_require_neutral_entry(&host);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(!coordinator.effects.request_dispatch);
+
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(!coordinator.effects.request_dispatch);
+
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 6, true));
   apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
                     MUSE_ON_SAFETY_FAILURE_NONE);
   assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
@@ -170,6 +212,7 @@ int main(void) {
   test_host_event_stream_drives_reader_state();
   test_stale_generation_and_unexpected_exit_fail_closed();
   test_typed_recovery_pending_requires_fresh_neutral_entry();
+  test_focus_loss_requires_fresh_neutral_entry();
   test_invalid_snapshot_is_rejected_not_disconnected();
   assert(strcmp(muse_on_connection_state_string(MUSE_ON_CONNECTION_UNKNOWN),
                 "unknown") == 0);

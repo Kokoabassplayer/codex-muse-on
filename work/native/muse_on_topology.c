@@ -143,6 +143,12 @@ bool muse_on_topology_host_apply_neutral_entry(
   return true;
 }
 
+void muse_on_topology_host_require_neutral_entry(
+    MuseOnTopologyHostState *state) {
+  if (!state) return;
+  state->inputs_released = false;
+}
+
 bool muse_on_topology_host_invalidate(MuseOnTopologyHostState *state,
                                       uint64_t generation, bool latch,
                                       MuseOnSafetyFailure fallback_failure) {
