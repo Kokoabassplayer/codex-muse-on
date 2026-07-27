@@ -52,6 +52,10 @@ _Avoid_: Automatic recovery, generic error
 A Quit request that ends the process only after held actions are released and Pass-through restoration is verified. Failed cleanup keeps the app running in Safety latch until Retry succeeds.
 _Avoid_: Force quit, best-effort quit
 
+**Quit Anyway**:
+An exceptional, one-confirmation escape from Safety latch or Disable Pending when cleanup cannot be verified. It keeps dispatch blocked, does not claim Safe Quit, and requires released controls, Retry, every gate, and Neutral Entry on the next launch.
+_Avoid_: normal quit, verified cleanup
+
 **Unclean Exit**:
 A prior process end that did not verify Safe Quit, including a crash, Force Quit, or power loss. The next launch remains Enabled but enters Safety latch until controls are released and Retry verifies cleanup and every Active prerequisite.
 _Avoid_: Normal Quit, automatic resume

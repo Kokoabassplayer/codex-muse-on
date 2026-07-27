@@ -13,8 +13,12 @@
 #include "muse_on_connection.h"
 #include "muse_on_connection_observer.h"
 #include "muse_on_diagnostics.h"
+#include "muse_on_quit_policy.h"
 #include "muse_on_setup_state.h"
 #include "muse_on_state_coordinator.h"
+
+/* package_app.sh has a fixed source list; keep this pure seam in the app TU. */
+#include "muse_on_quit_policy.c"
 
 static NSString *const kEnabledIntentKey = @"enabledIntent";
 static NSString *const kFirstEnableCompletedKey = @"firstEnableCompleted";
@@ -896,6 +900,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) MuseOnSafetyFailure listenerSafetyFailure;
 @property(nonatomic) ListenerStopPurpose listenerStopPurpose;
 @property(nonatomic) BOOL quitInFlight;
+@property(nonatomic) BOOL uncleanQuitAuthorized;
 @property(nonatomic) BOOL listenerEverStarted;
 @property(nonatomic) BOOL listenerCleanupKnown;
 @property(nonatomic) BOOL primaryInstance;
@@ -911,6 +916,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
                  safetyFailure:(MuseOnSafetyFailure)safetyFailure;
 - (void)notifySafetyLatchIfAuthorized;
 - (void)finishSafeQuit;
+- (MuseOnQuitPolicyDecision)quitPolicyDecision;
 - (void)refreshStatusIcon;
 - (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot;
 - (void)startConnectionObserver;
@@ -1806,7 +1812,10 @@ static void MuseOnAppConnectionSnapshot(
   supportRow.spacing = 5;
   NSButton *copy = actionButton(@"Copy Diagnostics", @selector(copyDiagnostics:));
   NSButton *report = actionButton(@"Report a Problem…", @selector(reportProblem:));
-  NSButton *quit = actionButton(@"Quit", @selector(quit:));
+  NSString *quitTitle = (_coordinator.safety_latched ||
+                         _coordinator.disable_pending)
+      ? @"Quit Anyway…" : @"Quit";
+  NSButton *quit = actionButton(quitTitle, @selector(quit:));
   [supportRow addArrangedSubview:copy];
   [supportRow addArrangedSubview:report];
   [supportRow addArrangedSubview:quit];
@@ -1864,6 +1873,7 @@ static void MuseOnAppConnectionSnapshot(
 }
 
 - (void)finishSafeQuit {
+  if (self.uncleanQuitAuthorized) return;
   [[NSUserDefaults standardUserDefaults] setBool:YES
                                            forKey:kSafeQuitVerifiedKey];
   muse_on_diagnostics_clear(&_diagnostics);
@@ -2028,7 +2038,30 @@ static void MuseOnAppConnectionSnapshot(
   [self refreshMenu];
 }
 
-- (void)quit:(id)sender { [NSApp terminate:nil]; }
+- (MuseOnQuitPolicyDecision)quitPolicyDecision {
+  MuseOnQuitPolicyInput input = {
+      .safety_latched = _coordinator.safety_latched,
+      .disable_pending = _coordinator.disable_pending,
+      .unclean_quit_authorized = self.uncleanQuitAuthorized,
+  };
+  return muse_on_quit_policy_decide(input);
+}
+
+- (void)quit:(id)sender {
+  (void)sender;
+  if ([self quitPolicyDecision] == MUSE_ON_QUIT_POLICY_CONFIRM_UNCLEAN_QUIT) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Cleanup could not be verified. Held-action release and Pass-through may be uncertain. Control is blocked. Quitting now will require released controls and Retry next launch.";
+    [alert addButtonWithTitle:@"Quit Anyway"];
+    [alert addButtonWithTitle:@"Stay and Retry"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+      [self refreshMenu];
+      return;
+    }
+    self.uncleanQuitAuthorized = YES;
+  }
+  [NSApp terminate:nil];
+}
 
 - (void)showPopover:(id)sender {
   if (self.popover.shown) {
@@ -2042,10 +2075,23 @@ static void MuseOnAppConnectionSnapshot(
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+  MuseOnQuitPolicyDecision decision;
+  (void)sender;
   if (!self.primaryInstance) return NSTerminateNow;
   if (self.quitInFlight) return NSTerminateLater;
-  if (_coordinator.safety_latched || _coordinator.disable_pending) {
+  decision = [self quitPolicyDecision];
+  if (decision == MUSE_ON_QUIT_POLICY_CONFIRM_UNCLEAN_QUIT) {
     return NSTerminateCancel;
+  }
+  if (decision == MUSE_ON_QUIT_POLICY_TERMINATE_UNCLEAN_QUIT) {
+    self.quitInFlight = YES;
+    /* This is the only exceptional cleanup request: the task was launched
+     * and is owned by this app. Do not wait for, verify, or claim cleanup. */
+    if (self.listenerTask) {
+      self.listenerStopPurpose = kListenerStopNone;
+      [self.listenerTask terminate];
+    }
+    return NSTerminateNow;
   }
 
   self.quitInFlight = YES;

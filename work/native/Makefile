@@ -9,10 +9,11 @@ TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_config_test muse_on_activation_test muse_on_shortcut_map_test \
 	muse_on_platform_test muse_on_key_filter_test muse_on_state_coordinator_test \
 	muse_on_setup_state_test muse_on_connection_test muse_on_diagnostics_test \
-	muse_on_controller_map_test muse_on_connection_observer_test
+	muse_on_controller_map_test muse_on_connection_observer_test \
+	muse_on_quit_policy_test
 FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
 	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test \
-	muse_on_connection_observer_test
+	muse_on_connection_observer_test muse_on_quit_policy_test
 ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
 	muse_on_key_filter.plist muse_on_state_coordinator.plist \
 	muse_on_setup_state.plist muse_on_connection.plist \
@@ -34,6 +35,7 @@ test: $(TEST_BINARIES)
 	./muse_on_diagnostics_test
 	./muse_on_controller_map_test
 	./muse_on_connection_observer_test
+	./muse_on_quit_policy_test
 
 test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_state_coordinator_test
@@ -42,6 +44,7 @@ test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_platform_test
 	./muse_on_controller_map_test
 	./muse_on_connection_observer_test
+	./muse_on_quit_policy_test
 
 test-sanitize:
 	@set -eu; \
@@ -103,6 +106,11 @@ muse_on_controller_map_test: muse_on_action_map.c \
 		tests/muse_on_controller_map_test.c muse_on_action_map.h muse_on_decoder.h
 	$(CC) $(CFLAGS) -I. muse_on_action_map.c \
 		tests/muse_on_controller_map_test.c -o $@
+
+muse_on_quit_policy_test: muse_on_quit_policy.c \
+		tests/muse_on_quit_policy_test.c muse_on_quit_policy.h
+	$(CC) $(CFLAGS) -I. muse_on_quit_policy.c \
+		tests/muse_on_quit_policy_test.c -o $@
 
 listener: muse_on_listener.c $(PHASE2_SOURCES)
 	$(CC) $(CFLAGS) -I. muse_on_listener.c $(PHASE2_SOURCES) \
