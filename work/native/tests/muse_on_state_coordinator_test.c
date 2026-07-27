@@ -511,6 +511,37 @@ static void test_unclean_recovery_rejects_failed_cleanup_and_gates(void) {
   assert(state.effects.request_dispatch == false);
 }
 
+/* Clean filter restoration is proved by stopped cleanup, not filter absence. */
+static void test_recovery_filter_restoration_order(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  /* Recovery state has an active filter; no restoration failure is present. */
+  assert(!muse_on_recovery_filter_restoration_unverified(
+      true, false, true, true, false, true, true, true, true));
+
+  /* filter_restored clears the active-filter observation while cleanup waits. */
+  assert(muse_on_recovery_filter_restoration_unverified(
+      true, false, true, true, false, true, true, true, false));
+
+  /* stopped with clean cleanup verifies that restoration; RETRY may clear. */
+  assert(!muse_on_recovery_filter_restoration_unverified(
+      true, true, true, true, false, true, true, true, false));
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = true;
+  p.inputs_released = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(state.effects.request_dispatch == true);
+
+  /* Missing filter proof plus failed cleanup remains fail-closed. */
+  assert(muse_on_recovery_filter_restoration_unverified(
+      true, false, true, true, false, true, true, true, false));
+}
+
 /* Disable persists immediately while failed cleanup remains latched. */
 static void test_disable_pending_resolves_to_disabled_after_retry(void) {
   MuseOnState state;
@@ -713,6 +744,7 @@ int main(void) {
   test_retry_requires_cleanup_and_every_gate();
   test_unclean_recovery_preserves_proof_then_requires_fresh_entry();
   test_unclean_recovery_rejects_failed_cleanup_and_gates();
+  test_recovery_filter_restoration_order();
   test_disable_pending_resolves_to_disabled_after_retry();
   test_unclean_prior_exit_latches_next_launch();
   test_ordinary_gates_auto_recover_without_latch();

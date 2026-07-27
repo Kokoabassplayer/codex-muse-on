@@ -1260,11 +1260,12 @@ static void MuseOnAppConnectionSnapshot(
   self.sessionAvailable = muse_on_session_is_available();
   self.codexForeground = muse_on_codex_is_frontmost();
   if (command == MUSE_ON_COMMAND_RETRY &&
-      self.listenerRecoveryValidated &&
       effectiveFailure == MUSE_ON_SAFETY_FAILURE_NONE &&
-      self.permissionGranted && self.controllerConnected &&
-      !self.multipleControllers && self.sessionAvailable &&
-      self.codexForeground && self.inputsReleased && !self.filterVerified) {
+      muse_on_recovery_filter_restoration_unverified(
+          self.listenerRecoveryValidated, cleanupVerified,
+          self.permissionGranted, self.controllerConnected,
+          self.multipleControllers, self.sessionAvailable,
+          self.codexForeground, self.inputsReleased, self.filterVerified)) {
     effectiveFailure = MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE;
   }
   MuseOnPrerequisites prerequisites = {

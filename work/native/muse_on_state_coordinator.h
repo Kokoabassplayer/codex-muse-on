@@ -119,6 +119,13 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
 /* Listener startup and recovery are not Neutral Entry evidence. */
 void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites);
 
+/* A missing filter is unsafe only before clean recovery is verified. */
+bool muse_on_recovery_filter_restoration_unverified(
+    bool recovery_validated, bool cleanup_verified, bool permission_granted,
+    bool controller_connected, bool multiple_controllers,
+    bool session_available, bool codex_foreground, bool inputs_released,
+    bool filter_verified);
+
 const char *muse_on_status_string(MuseOnStatus status);
 const char *muse_on_inactive_reason_string(MuseOnInactiveReason reason);
 const char *muse_on_safety_failure_string(MuseOnSafetyFailure failure);

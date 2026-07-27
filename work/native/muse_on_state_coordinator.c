@@ -111,6 +111,16 @@ void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites) {
   prerequisites->inputs_released = false;
 }
 
+bool muse_on_recovery_filter_restoration_unverified(
+    bool recovery_validated, bool cleanup_verified, bool permission_granted,
+    bool controller_connected, bool multiple_controllers,
+    bool session_available, bool codex_foreground, bool inputs_released,
+    bool filter_verified) {
+  return recovery_validated && !cleanup_verified && permission_granted &&
+         controller_connected && !multiple_controllers && session_available &&
+         codex_foreground && inputs_released && !filter_verified;
+}
+
 void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
                          MuseOnPrerequisites prerequisites) {
   MuseOnSafetyFailure observedFailure;
