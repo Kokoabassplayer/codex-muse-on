@@ -1019,21 +1019,22 @@ static void MuseOnAppConnectionSnapshot(
   return MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
 }
 
-- (void)recordListenerError:(NSString *)operation {
+- (void)recordListenerError:(NSString *)operation code:(NSNumber *)codeValue {
   const char *raw = operation.UTF8String;
   MuseOnDiagnosticErrorCode error = MUSE_ON_DIAGNOSTIC_ERROR_DEVICE_UNCERTAIN;
+  int64_t code = codeValue ? codeValue.longLongValue : 0;
 
-  if (!raw) return;
-  if (strcmp(raw, "restore_keyboard_filter") == 0 ||
+  if (raw && (strcmp(raw, "restore_keyboard_filter") == 0 ||
       strcmp(raw, "rollback_keyboard_filter") == 0 ||
-      strcmp(raw, "recover_keyboard_filter") == 0) {
+      strcmp(raw, "recover_keyboard_filter") == 0)) {
     error = MUSE_ON_DIAGNOSTIC_ERROR_FILTER_RESTORE;
-  } else if (strcmp(raw, "apply_keyboard_filter") == 0) {
+  } else if (raw && strcmp(raw, "apply_keyboard_filter") == 0) {
     error = MUSE_ON_DIAGNOSTIC_ERROR_FILTER_APPLY;
-  } else if (strcmp(raw, "input_report") == 0 ||
-             strcmp(raw, "invalid_input_report") == 0) {
+  } else if (raw && (strcmp(raw, "input_report") == 0 ||
+                     strcmp(raw, "invalid_input_report") == 0)) {
     return;
   }
+  muse_on_diagnostics_record_listener_error(&_diagnostics, raw, code);
   muse_on_diagnostics_record_error(&_diagnostics, error);
 }
 
@@ -1075,6 +1076,7 @@ static void MuseOnAppConnectionSnapshot(
     if (accessibility) self.permissionGranted &= accessibility.boolValue;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"ready"]) {
+    muse_on_diagnostics_reset_listener(&_diagnostics);
     NSString *inputMonitoring = event[@"inputMonitoring"];
     NSNumber *accessibility = event[@"accessibility"];
     if (inputMonitoring && accessibility) {
@@ -1113,7 +1115,9 @@ static void MuseOnAppConnectionSnapshot(
       }
     }
   } else if ([name isEqualToString:@"error"]) {
-    [self recordListenerError:operation];
+    NSNumber *code = [event[@"code"] isKindOfClass:[NSNumber class]]
+                         ? event[@"code"] : nil;
+    [self recordListenerError:operation code:code];
   } else if ([name isEqualToString:@"safety_latch"]) {
     self.listenerSawSafetyLatch = YES;
     self.listenerSafetyFailure = [self safetyFailureFromString:safetyReason];
@@ -1134,6 +1138,10 @@ static void MuseOnAppConnectionSnapshot(
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
     self.filterVerified = [event[@"filterVerified"] boolValue];
     self.codexForeground = [event[@"codexForeground"] boolValue];
+    if (self.listenerRecoveryValidated && self.permissionGranted &&
+        self.filterVerified && self.codexForeground && self.inputsReleased) {
+      muse_on_diagnostics_reset_listener(&_diagnostics);
+    }
     if (self.listenerRecoveryMode && self.listenerTask != nil &&
         (self.listenerStopPurpose == kListenerStopForRetry ||
          self.listenerStopPurpose == kListenerStopForDisable)) {
@@ -1353,6 +1361,7 @@ static void MuseOnAppConnectionSnapshot(
   if (self.listenerTask != nil ||
       (!safetyLatched && (!_setup.enabled || _coordinator.safety_latched ||
                           _coordinator.disable_pending))) return;
+  muse_on_diagnostics_reset_listener(&_diagnostics);
   path = [[NSBundle mainBundle] pathForAuxiliaryExecutable:@"muse_on_listener"];
   if (!path) {
     self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
@@ -1399,6 +1408,27 @@ static void MuseOnAppConnectionSnapshot(
       weakSelf.listenerOutputHandle.readabilityHandler = nil;
       NSData *remaining = [weakSelf.listenerOutputHandle availableData];
       if (remaining.length > 0) [weakSelf consumeListenerData:remaining];
+      NSTaskTerminationReason terminationReason = finishedTask.terminationReason;
+      MuseOnDiagnosticTerminationReason diagnosticReason =
+          terminationReason == NSTaskTerminationReasonExit
+              ? MUSE_ON_DIAGNOSTIC_TERMINATION_EXIT
+              : (terminationReason == NSTaskTerminationReasonUncaughtSignal
+                     ? MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL
+                     : MUSE_ON_DIAGNOSTIC_TERMINATION_UNKNOWN);
+      BOOL hasTerminationFailure = finishedTask.terminationStatus != 0 ||
+                                   diagnosticReason ==
+                                       MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL ||
+                                   weakSelf.listenerSawSafetyLatch ||
+                                   weakSelf.diagnostics.listener.has_error;
+      if (hasTerminationFailure) {
+        MuseOnAppDelegate *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        muse_on_diagnostics_record_listener_termination(
+            &strongSelf->_diagnostics, diagnosticReason,
+            finishedTask.terminationStatus,
+            diagnosticReason == MUSE_ON_DIAGNOSTIC_TERMINATION_SIGNAL,
+            finishedTask.terminationStatus);
+      }
       cleanupVerified = weakSelf.listenerSawStopped &&
                         weakSelf.listenerCleanupVerified;
       if (finishedTask.terminationStatus != 0) cleanupVerified = NO;
@@ -1484,6 +1514,16 @@ static void MuseOnAppConnectionSnapshot(
       if (_coordinator.disable_pending) {
         return @"Disable pending; cleanup must be verified.";
       }
+      if (_coordinator.safety_failure ==
+          MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN) {
+        char detail[192];
+        size_t written = muse_on_diagnostics_copy_listener_reason(
+            &_diagnostics, _coordinator.safety_failure,
+            _coordinator.disable_pending, detail, sizeof(detail));
+        if (written > 0) {
+          return [NSString stringWithFormat:@"Safety latch — %s", detail];
+        }
+      }
       return [NSString stringWithFormat:@"Safety latch — %s",
                                         muse_on_safety_failure_string(
                                             _coordinator.safety_failure)];
@@ -1524,7 +1564,7 @@ static void MuseOnAppConnectionSnapshot(
     case MUSE_ON_STATUS_SAFETY_LATCH:
       symbolName = @"exclamationmark.triangle";
       fallbackTitle = @"!";
-      stateLabel = @"Safety latch — Retry required";
+      stateLabel = [self controlReasonText];
       break;
     case MUSE_ON_STATUS_DISABLED:
       symbolName = @"minus.circle";
