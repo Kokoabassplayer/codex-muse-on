@@ -33,7 +33,7 @@ typedef void (*MuseOnConnectionObserverCallback)(
 - (void)stop;
 @end
 
-/* Creates the production, read-only VID/PID observer backend. */
+/* Test utility only; production topology comes from the listener task. */
 MuseOnConnectionObserver *muse_on_connection_observer_create_native(
     MuseOnConnectionObserverCallback callback, void *callback_context);
 

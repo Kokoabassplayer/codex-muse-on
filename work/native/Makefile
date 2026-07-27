@@ -11,14 +11,16 @@ TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_setup_state_test muse_on_connection_test muse_on_diagnostics_test \
 	muse_on_controller_map_test muse_on_connection_observer_test \
 	muse_on_quit_policy_test muse_on_permission_test \
-	muse_on_listener_completion_gate_test
+	muse_on_listener_completion_gate_test muse_on_topology_test
 FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
 	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test \
 	muse_on_connection_observer_test muse_on_quit_policy_test \
-	muse_on_permission_test muse_on_listener_completion_gate_test
+	muse_on_permission_test muse_on_listener_completion_gate_test \
+	muse_on_topology_test
 ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
 	muse_on_key_filter.plist muse_on_state_coordinator.plist \
 	muse_on_setup_state.plist muse_on_connection.plist \
+	muse_on_topology.plist \
 	muse_on_diagnostics.plist muse_on_menu_bar.plist \
 	muse_on_connection_observer.plist
 SANITIZER_FLAGS ?= -fsanitize=address,undefined
@@ -40,6 +42,7 @@ test: $(TEST_BINARIES)
 	./muse_on_connection_observer_test
 	./muse_on_quit_policy_test
 	./muse_on_listener_completion_gate_test
+	./muse_on_topology_test
 
 test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_state_coordinator_test
@@ -51,6 +54,7 @@ test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_connection_observer_test
 	./muse_on_quit_policy_test
 	./muse_on_listener_completion_gate_test
+	./muse_on_topology_test
 
 test-sanitize:
 	@set -eu; \
@@ -127,8 +131,14 @@ muse_on_listener_completion_gate_test: tests/muse_on_listener_completion_gate_te
 	muse_on_listener_completion_gate.h
 	$(CC) $(CFLAGS) -I. tests/muse_on_listener_completion_gate_test.c -o $@
 
-listener: muse_on_listener.c $(PHASE2_SOURCES)
-	$(CC) $(CFLAGS) -I. muse_on_listener.c $(PHASE2_SOURCES) \
+muse_on_topology_test: muse_on_topology.c muse_on_connection.c \
+	tests/muse_on_topology_test.c muse_on_topology.h muse_on_connection.h \
+	muse_on_state_coordinator.c muse_on_state_coordinator.h
+	$(CC) $(CFLAGS) -I. muse_on_topology.c muse_on_connection.c \
+		muse_on_state_coordinator.c tests/muse_on_topology_test.c -o $@
+
+listener: muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c
+	$(CC) $(CFLAGS) -I. muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c \
 		$(HID_FRAMEWORKS) $(PLATFORM_FRAMEWORKS) -o muse_on_listener
 
 analyze:
@@ -138,6 +148,7 @@ analyze:
 	$(CC) --analyze $(CFLAGS) -I. muse_on_state_coordinator.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_setup_state.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_connection.c
+	$(CC) --analyze $(CFLAGS) -I. muse_on_topology.c
 	$(CC) --analyze $(CFLAGS) -fobjc-arc -I. muse_on_connection_observer.m
 	$(CC) --analyze $(CFLAGS) -I. muse_on_diagnostics.c
 	$(CC) --analyze $(CFLAGS) -fobjc-arc -I. muse_on_menu_bar.m

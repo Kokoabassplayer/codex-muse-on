@@ -87,6 +87,7 @@ struct ListenerState {
   bool safetyLatchEmitted;
   bool recoveryStateEmitted;
   bool recoveryErrorObserved;
+  bool topologyInitialSettled;
   MuseOnRecoveryPolicy recoveryPolicy;
   uint64_t filterRetryAfterNs;
   uint64_t permissionCheckAfterNs;
@@ -123,6 +124,8 @@ static void emit_safety_latch(ListenerState *state,
 
 static void emit_permission_required(ListenerState *state, const char *gate) {
   if (!state) return;
+  printf("{\"event\":\"topology\",\"state\":\"unknown\","
+         "\"locationID\":0}\n");
   if (gate && strcmp(gate, "input_monitoring") == 0) {
     state->inputMonitoringAccess = false;
   } else if (gate && strcmp(gate, "accessibility") == 0) {
@@ -143,6 +146,15 @@ static void emit_stopped(const ListenerState *state) {
          muse_on_safety_failure_string(
              state ? state->safetyFailure : MUSE_ON_SAFETY_FAILURE_NONE));
 }
+
+static void emit_topology_snapshot(MuseOnConnectionSnapshot snapshot) {
+  printf("{\"event\":\"topology\",\"state\":\"%s\","
+         "\"locationID\":%u}\n",
+         muse_on_connection_state_string(snapshot.state),
+         snapshot.location_id);
+}
+
+static void emit_current_topology(const ListenerState *state);
 
 static const char *interface_name(InterfaceKind kind) {
   switch (kind) {
@@ -191,6 +203,12 @@ static void refresh_permission_state(ListenerState *state, uint64_t nowNs) {
            "\"inputMonitoring\":%s,\"accessibility\":%s}\n",
            boolean_string(state->inputMonitoringAccess),
            boolean_string(state->postEventAccess));
+    if (!filter_permissions_ready(state)) {
+      emit_topology_snapshot(
+          (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+    } else {
+      emit_current_topology(state);
+    }
   }
 }
 
@@ -249,6 +267,50 @@ static DeviceSlot *find_slot(ListenerState *state, IOHIDDeviceRef device) {
   return NULL;
 }
 
+static MuseOnConnectionSnapshot current_connection_snapshot(
+    const ListenerState *state) {
+  const DeviceSlot *slot;
+  MuseOnObservedInterface *interfaces;
+  size_t count = 0;
+  size_t index = 0;
+  MuseOnConnectionSnapshot snapshot;
+
+  if (!state) {
+    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0};
+  }
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (!slot->removed && (slot->kind == kInterfaceKeyboard ||
+                           slot->kind == kInterfaceJoystick)) {
+      count++;
+    }
+  }
+  if (count == 0) {
+    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+  }
+  interfaces = calloc(count, sizeof(*interfaces));
+  if (!interfaces) {
+    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0};
+  }
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (slot->removed) continue;
+    if (slot->kind == kInterfaceKeyboard) {
+      interfaces[index++] = (MuseOnObservedInterface){
+          MUSE_ON_OBSERVED_KEYBOARD, slot->locationID, true};
+    } else if (slot->kind == kInterfaceJoystick) {
+      interfaces[index++] = (MuseOnObservedInterface){
+          MUSE_ON_OBSERVED_JOYSTICK, slot->locationID, true};
+    }
+  }
+  snapshot = muse_on_classify_connections(interfaces, index);
+  free(interfaces);
+  return snapshot;
+}
+
+static void emit_current_topology(const ListenerState *state) {
+  if (!state || !state->topologyInitialSettled) return;
+  emit_topology_snapshot(current_connection_snapshot(state));
+}
+
 static bool active_slot_at_location(const ListenerState *state,
                                     InterfaceKind kind,
                                     uint64_t locationID) {
@@ -266,64 +328,11 @@ static bool active_slot_at_location(const ListenerState *state,
 
 static bool validated_controller_location(const ListenerState *state,
                                           uint32_t *locationID) {
-  const DeviceSlot *slot;
-  MuseOnObservedInterface *interfaces;
-  size_t count = 0;
-  size_t index = 0;
-  bool valid;
+  MuseOnConnectionSnapshot snapshot = current_connection_snapshot(state);
 
-  for (slot = state->slots; slot; slot = slot->next) {
-    if (!slot->removed && (slot->kind == kInterfaceKeyboard ||
-                           slot->kind == kInterfaceJoystick)) count++;
-  }
-  if (count == 0) return false;
-  interfaces = calloc(count, sizeof(*interfaces));
-  if (!interfaces) return false;
-  for (slot = state->slots; slot; slot = slot->next) {
-    if (slot->removed) continue;
-    if (slot->kind == kInterfaceKeyboard) {
-      interfaces[index++] = (MuseOnObservedInterface){
-          MUSE_ON_OBSERVED_KEYBOARD, slot->locationID, true};
-    } else if (slot->kind == kInterfaceJoystick) {
-      interfaces[index++] = (MuseOnObservedInterface){
-          MUSE_ON_OBSERVED_JOYSTICK, slot->locationID, true};
-    }
-  }
-  valid = muse_on_find_single_complete_controller(interfaces, index, locationID);
-  free(interfaces);
-  return valid;
-}
-
-static size_t complete_controller_count(const ListenerState *state) {
-  const DeviceSlot *candidate;
-  size_t complete = 0;
-
-  if (!state) return 0;
-  for (candidate = state->slots; candidate; candidate = candidate->next) {
-    const DeviceSlot *slot;
-    size_t keyboards = 0;
-    size_t joysticks = 0;
-    bool seen = false;
-
-    if (candidate->removed || candidate->locationID == 0) continue;
-    for (slot = state->slots; slot != candidate; slot = slot->next) {
-      if (!slot->removed && slot->locationID == candidate->locationID) {
-        seen = true;
-        break;
-      }
-    }
-    if (seen) continue;
-    for (slot = state->slots; slot; slot = slot->next) {
-      if (slot->removed || slot->locationID != candidate->locationID) continue;
-      if (slot->kind == kInterfaceKeyboard) {
-        keyboards++;
-      } else if (slot->kind == kInterfaceJoystick) {
-        joysticks++;
-      }
-    }
-    if (keyboards == 1 && joysticks == 1) complete++;
-  }
-  return complete;
+  if (!locationID || snapshot.state != MUSE_ON_CONNECTION_SINGLE) return false;
+  *locationID = snapshot.location_id;
+  return true;
 }
 
 static bool all_inputs_released(const ListenerState *state) {
@@ -341,7 +350,7 @@ static bool all_inputs_released(const ListenerState *state) {
 }
 
 static void emit_recovery_state(ListenerState *state) {
-  size_t completeCount;
+  MuseOnConnectionSnapshot topology;
   uint32_t controllerLocation = 0;
   bool controllerConnected;
   bool filterVerified;
@@ -351,10 +360,9 @@ static void emit_recovery_state(ListenerState *state) {
   MuseOnRecoveryObservation observation;
 
   if (!state || state->recoveryStateEmitted) return;
-  completeCount = complete_controller_count(state);
-  controllerConnected = completeCount == 1 &&
-                        validated_controller_location(state,
-                                                      &controllerLocation);
+  topology = current_connection_snapshot(state);
+  controllerConnected = topology.state == MUSE_ON_CONNECTION_SINGLE &&
+                        validated_controller_location(state, &controllerLocation);
   inputsReleased = controllerConnected && all_inputs_released(state);
   filterVerified = controllerConnected && state->keyFilterApplied &&
                    muse_on_key_filter_is_active(state->keyFilter) &&
@@ -363,7 +371,7 @@ static void emit_recovery_state(ListenerState *state) {
   observation = (MuseOnRecoveryObservation){
       .permission_granted = filter_permissions_ready(state),
       .controller_connected = controllerConnected,
-      .multiple_controllers = completeCount > 1,
+      .multiple_controllers = topology.state == MUSE_ON_CONNECTION_MULTIPLE,
       .codex_foreground = state->codexFrontmost,
       .inputs_released = inputsReleased,
       .filter_verified = filterVerified,
@@ -385,7 +393,8 @@ static void emit_recovery_state(ListenerState *state) {
          "\"permissionGranted\":%s,\"controllerConnected\":%s,"
          "\"multipleControllers\":%s,\"codexForeground\":%s,"
          "\"inputsReleased\":%s,\"filterVerified\":%s,"
-         "\"keyboardOpen\":%s}\n",
+         "\"keyboardOpen\":%s,\"topology\":\"%s\","
+         "\"locationID\":%u}\n",
          muse_on_recovery_outcome_string(outcome),
          muse_on_safety_failure_string(
              outcome == MUSE_ON_RECOVERY_OUTCOME_FAILURE
@@ -396,7 +405,8 @@ static void emit_recovery_state(ListenerState *state) {
          boolean_string(observation.multiple_controllers),
          boolean_string(state->codexFrontmost),
          boolean_string(inputsReleased), boolean_string(filterVerified),
-         boolean_string(state->keyboardOpen));
+         boolean_string(state->keyboardOpen),
+         muse_on_connection_state_string(topology.state), topology.location_id);
   state->recoveryStateEmitted = true;
   stopRequested = 1;
 }
@@ -601,11 +611,19 @@ static void report_received(void *context, IOReturn result, void *sender,
   if (!slot_matches_active_filter(state, slot)) return;
   if (result != kIOReturnSuccess) {
     emit_error(state, "input_report", result);
+    emit_topology_snapshot(
+        (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+    stopRequested = 1;
     return;
   }
   if (type != kIOHIDReportTypeInput || !report || reportLength < 0 ||
       reportLength > slot->reportCapacity) {
     emit_error(state, "invalid_input_report", kIOReturnBadArgument);
+    emit_topology_snapshot(
+        (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+    stopRequested = 1;
     return;
   }
 
@@ -702,6 +720,13 @@ static void device_added(void *context, IOReturn result, void *sender,
       !managerContext->state || !device) {
     emit_error(managerContext ? managerContext->state : NULL,
                "device_added", result);
+    if (managerContext && managerContext->state) {
+      emit_topology_snapshot(
+          (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+      emit_safety_latch(managerContext->state,
+                        MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+      stopRequested = 1;
+    }
     return;
   }
   state = managerContext->state;
@@ -713,6 +738,10 @@ static void device_added(void *context, IOReturn result, void *sender,
       !number_property(device, CFSTR(kIOHIDMaxInputReportSizeKey),
                        &maxInputReportSize)) {
     emit_error(state, "device_properties", kIOReturnBadArgument);
+    emit_topology_snapshot(
+        (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+    stopRequested = 1;
     return;
   }
   kind = classify_interface(usagePage, usage);
@@ -758,6 +787,7 @@ static void device_added(void *context, IOReturn result, void *sender,
       activate_keyboard_filter(state, monotonic_ns(), "controller_connected");
     }
   }
+  emit_current_topology(state);
 }
 
 static void device_removed(void *context, IOReturn result, void *sender,
@@ -771,6 +801,13 @@ static void device_removed(void *context, IOReturn result, void *sender,
       !managerContext->state || !device) {
     emit_error(managerContext ? managerContext->state : NULL,
                "device_removed", result);
+    if (managerContext && managerContext->state) {
+      emit_topology_snapshot(
+          (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+      emit_safety_latch(managerContext->state,
+                        MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+      stopRequested = 1;
+    }
     return;
   }
   state = managerContext->state;
@@ -779,6 +816,7 @@ static void device_removed(void *context, IOReturn result, void *sender,
 
   slot->removed = true;
   emit_device_event("device_removed", slot);
+  emit_current_topology(state);
   if (state->config.mode != MUSE_ON_MODE_DRY_RUN && state->keyFilterApplied) {
     uint32_t controllerLocation;
     if (!validated_controller_location(state, &controllerLocation)) {
@@ -1056,6 +1094,8 @@ int main(int argc, char *argv[]) {
   setvbuf(stderr, NULL, _IONBF, 0);
   signal(SIGINT, stop_signal);
   signal(SIGTERM, stop_signal);
+  emit_topology_snapshot(
+      (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
 
   inputAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
   if (state.config.request_permissions &&
@@ -1102,14 +1142,20 @@ int main(int argc, char *argv[]) {
   state.keyFilter = muse_on_key_filter_create();
   if (!state.joystickManager || !state.keyboardManager || !state.keyFilter) {
     emit_error(&state, "create_hid_managers", kIOReturnNoMemory);
+    emit_topology_snapshot(
+        (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+    emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
     muse_on_key_filter_destroy(state.keyFilter);
     unschedule_and_release_manager(&state, state.keyboardManager);
     unschedule_and_release_manager(&state, state.joystickManager);
+    emit_stopped(&state);
     return 1;
   }
 
   opened = IOHIDManagerOpen(state.joystickManager, kIOHIDOptionsTypeNone);
   if (opened != kIOReturnSuccess) {
+    emit_topology_snapshot(
+        (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
     if (muse_on_listener_error_is_permission_required(
             "open_joystick_manager", opened)) {
       emit_permission_required(&state, "input_monitoring");
@@ -1124,6 +1170,8 @@ int main(int argc, char *argv[]) {
 
   opened = IOHIDManagerOpen(state.keyboardManager, kIOHIDOptionsTypeNone);
   if (opened != kIOReturnSuccess) {
+    emit_topology_snapshot(
+        (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
     if (muse_on_listener_error_is_permission_required(
             "open_keyboard_manager", opened)) {
       emit_permission_required(&state, "input_monitoring");
@@ -1138,6 +1186,8 @@ int main(int argc, char *argv[]) {
     return 2;
   }
   state.keyboardOpen = true;
+  state.topologyInitialSettled = true;
+  emit_current_topology(&state);
   if (state.config.mode != MUSE_ON_MODE_DRY_RUN) {
     update_focus_and_filter(&state, monotonic_ns());
   }
@@ -1169,6 +1219,8 @@ int main(int argc, char *argv[]) {
   }
 
 shutdown:
+  emit_topology_snapshot(
+      (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
   restore_keyboard_filter(&state, "process_exit");
   if (state.keyboardOpen) {
     IOReturn keyboardClosed =

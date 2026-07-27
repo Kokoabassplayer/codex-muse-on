@@ -4,6 +4,30 @@ static MuseOnConnectionSnapshot disconnected_snapshot(void) {
   return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
 }
 
+const char *muse_on_connection_state_string(MuseOnConnectionState state) {
+  switch (state) {
+    case MUSE_ON_CONNECTION_UNKNOWN: return "unknown";
+    case MUSE_ON_CONNECTION_DISCONNECTED: return "disconnected";
+    case MUSE_ON_CONNECTION_SINGLE: return "single";
+    case MUSE_ON_CONNECTION_MULTIPLE: return "multiple";
+  }
+  return "unknown";
+}
+
+bool muse_on_connection_snapshot_is_valid(
+    MuseOnConnectionSnapshot snapshot) {
+  switch (snapshot.state) {
+    case MUSE_ON_CONNECTION_UNKNOWN:
+      return snapshot.location_id == 0;
+    case MUSE_ON_CONNECTION_DISCONNECTED:
+    case MUSE_ON_CONNECTION_MULTIPLE:
+      return snapshot.location_id == 0;
+    case MUSE_ON_CONNECTION_SINGLE:
+      return snapshot.location_id != 0;
+  }
+  return false;
+}
+
 static size_t count_at_location(const MuseOnObservedInterface *interfaces,
                                 size_t count, uint32_t location_id,
                                 MuseOnObservedInterfaceKind kind) {

@@ -11,12 +11,12 @@
 #include "muse_on_platform.h"
 #include "muse_on_action_map.h"
 #include "muse_on_connection.h"
-#include "muse_on_connection_observer.h"
 #include "muse_on_diagnostics.h"
 #include "muse_on_listener_completion_gate.h"
 #include "muse_on_quit_policy.h"
 #include "muse_on_setup_state.h"
 #include "muse_on_state_coordinator.h"
+#include "muse_on_topology.h"
 
 static NSString *const kEnabledIntentKey = @"enabledIntent";
 static NSString *const kFirstEnableCompletedKey = @"firstEnableCompleted";
@@ -879,12 +879,12 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSPopover *popover;
 @property(nonatomic, strong) MuseOnControllerMapView *controllerMapView;
-@property(nonatomic, strong) MuseOnConnectionObserver *connectionObserver;
 @property(nonatomic, strong) NSTask *listenerTask;
 @property(nonatomic, strong) NSFileHandle *listenerOutputHandle;
 @property(nonatomic, strong) NSMutableData *listenerOutputBuffer;
 @property(nonatomic) BOOL controllerConnected;
 @property(nonatomic) BOOL multipleControllers;
+@property(nonatomic) uint32_t controllerLocationID;
 @property(nonatomic) BOOL inputsReleased;
 @property(nonatomic) BOOL permissionGranted;
 @property(nonatomic) BOOL filterVerified;
@@ -910,6 +910,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) BOOL uncleanQuitAuthorized;
 @property(nonatomic) BOOL listenerEverStarted;
 @property(nonatomic) BOOL listenerCleanupKnown;
+@property(nonatomic) uint64_t listenerTaskGeneration;
+@property(nonatomic) MuseOnTopologyAuthority topologyAuthority;
 @property(nonatomic) BOOL primaryInstance;
 @property(nonatomic) MuseOnDiagnostics diagnostics;
 @property(nonatomic) MuseOnSetupState setup;
@@ -927,17 +929,13 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (MuseOnQuitPolicyDecision)quitPolicyDecision;
 - (BOOL)confirmUncleanQuitIfNeeded;
 - (void)refreshStatusIcon;
-- (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot;
-- (void)startConnectionObserver;
-- (void)stopConnectionObserver;
+- (void)applyListenerTopologySnapshot:(MuseOnConnectionSnapshot)snapshot;
+- (void)invalidateListenerTopologyForTask:(NSTask *)task latch:(BOOL)latch;
+- (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
+                                  snapshot:(MuseOnConnectionSnapshot *)snapshot;
+- (void)recordListenerProtocolFailure;
 - (void)updatePermissionStateFromEvent:(NSDictionary *)event;
 @end
-
-static void MuseOnAppConnectionSnapshot(
-    void *context, MuseOnConnectionSnapshot snapshot) {
-  MuseOnAppDelegate *delegate = (__bridge MuseOnAppDelegate *)context;
-  [delegate applyConnectionSnapshot:snapshot];
-}
 
 @implementation MuseOnAppDelegate
 
@@ -1010,6 +1008,7 @@ static void MuseOnAppConnectionSnapshot(
   muse_on_setup_state_init(&_setup, [defaults boolForKey:kEnabledIntentKey],
                           [defaults boolForKey:kStartAutomaticallyKey]);
   muse_on_state_init(&_coordinator);
+  muse_on_topology_init(&_topologyAuthority);
   muse_on_diagnostics_init(&_diagnostics);
   _sessionAvailable = muse_on_session_is_available();
   self.missingPermissionGates =
@@ -1020,6 +1019,7 @@ static void MuseOnAppConnectionSnapshot(
   self.retryPermissionPending = NO;
   self.retryPermissionDestinationOpened = NO;
   _inputsReleased = NO;
+  _controllerLocationID = 0;
   _filterVerified = true;
   _listenerRecoveryValidated = NO;
   _listenerEverStarted = NO;
@@ -1136,13 +1136,132 @@ static void MuseOnAppConnectionSnapshot(
   muse_on_diagnostics_record_error(&_diagnostics, error);
 }
 
+- (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
+                                  snapshot:(MuseOnConnectionSnapshot *)snapshot {
+  NSString *stateName = event[@"state"];
+  if (![stateName isKindOfClass:[NSString class]]) {
+    stateName = event[@"topology"];
+  }
+  NSNumber *location = event[@"locationID"];
+  MuseOnConnectionState state;
+
+  if (![stateName isKindOfClass:[NSString class]] ||
+      ![location isKindOfClass:[NSNumber class]] || !snapshot) {
+    return NO;
+  }
+  if ([stateName isEqualToString:@"unknown"]) {
+    state = MUSE_ON_CONNECTION_UNKNOWN;
+  } else if ([stateName isEqualToString:@"disconnected"]) {
+    state = MUSE_ON_CONNECTION_DISCONNECTED;
+  } else if ([stateName isEqualToString:@"single"]) {
+    state = MUSE_ON_CONNECTION_SINGLE;
+  } else if ([stateName isEqualToString:@"multiple"]) {
+    state = MUSE_ON_CONNECTION_MULTIPLE;
+  } else {
+    return NO;
+  }
+  *snapshot = (MuseOnConnectionSnapshot){state, location.unsignedIntValue};
+  return muse_on_connection_snapshot_is_valid(*snapshot);
+}
+
+- (void)applyListenerTopologySnapshot:(MuseOnConnectionSnapshot)snapshot {
+  BOOL nextControllerConnected;
+  BOOL nextMultipleControllers;
+  BOOL topologyChanged;
+  BOOL preserveRecoveryTopology =
+      snapshot.state == MUSE_ON_CONNECTION_UNKNOWN &&
+      self.listenerRecoveryMode && self.listenerRecoveryValidated &&
+      (self.listenerStopPurpose == kListenerStopForRetry ||
+       self.listenerStopPurpose == kListenerStopForDisable);
+
+  if (!muse_on_topology_apply(&_topologyAuthority, self.listenerTaskGeneration,
+                              snapshot)) {
+    [self recordListenerProtocolFailure];
+    return;
+  }
+  if (preserveRecoveryTopology) return;
+  nextControllerConnected = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
+  nextMultipleControllers = snapshot.state == MUSE_ON_CONNECTION_MULTIPLE;
+  topologyChanged = self.controllerConnected != nextControllerConnected ||
+                    self.multipleControllers != nextMultipleControllers ||
+                    self.controllerLocationID != snapshot.location_id;
+  self.controllerConnected = nextControllerConnected;
+  self.multipleControllers = nextMultipleControllers;
+  self.controllerLocationID = snapshot.location_id;
+  if (topologyChanged || snapshot.state == MUSE_ON_CONNECTION_UNKNOWN) {
+    self.inputsReleased = NO;
+  }
+  [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
+  if (self.popover.shown) [self refreshMenu];
+}
+
+- (void)recordListenerProtocolFailure {
+  if (self.listenerTask != nil) {
+    [self invalidateListenerTopologyForTask:self.listenerTask latch:YES];
+  } else {
+    self.controllerConnected = NO;
+    self.multipleControllers = NO;
+    self.controllerLocationID = 0;
+    self.inputsReleased = NO;
+    self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+    self.listenerSawSafetyLatch = YES;
+    [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                 cleanupVerified:NO
+                   safetyFailure:self.listenerSafetyFailure];
+  }
+}
+
+- (void)invalidateListenerTopologyForTask:(NSTask *)task latch:(BOOL)latch {
+  BOOL preserveRecoveryTopology;
+
+  if (!task || self.listenerTask != task) return;
+  preserveRecoveryTopology =
+      self.listenerRecoveryMode && self.listenerRecoveryValidated &&
+      (self.listenerStopPurpose == kListenerStopForRetry ||
+       self.listenerStopPurpose == kListenerStopForDisable);
+  (void)muse_on_topology_invalidate(&_topologyAuthority,
+                                    self.listenerTaskGeneration);
+  if (!preserveRecoveryTopology) {
+    self.controllerConnected = NO;
+    self.multipleControllers = NO;
+    self.controllerLocationID = 0;
+    self.inputsReleased = NO;
+    self.filterVerified = NO;
+  }
+  if (latch) {
+    if (self.listenerSafetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
+      self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+    }
+    self.listenerSawSafetyLatch = YES;
+    [self recordSafetyFailure:self.listenerSafetyFailure];
+    [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                 cleanupVerified:NO
+                   safetyFailure:self.listenerSafetyFailure];
+  } else {
+    [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
+  }
+  if (self.popover.shown) [self refreshMenu];
+}
+
 - (void)recordListenerEvent:(NSDictionary *)event {
   NSString *name = event[@"event"];
   NSString *actionName = event[@"action"];
   NSString *operation = event[@"operation"];
   NSString *safetyReason = event[@"reason"];
 
-  if ([name isEqualToString:@"permission_required"]) {
+  if (![name isKindOfClass:[NSString class]]) {
+    [self recordListenerProtocolFailure];
+    return;
+  }
+  if ([name isEqualToString:@"topology"]) {
+    MuseOnConnectionSnapshot snapshot;
+    if (![self listenerTopologySnapshotFromEvent:event snapshot:&snapshot]) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
+    [self applyListenerTopologySnapshot:snapshot];
+  } else if ([name isEqualToString:@"permission_required"]) {
+    [self invalidateListenerTopologyForTask:self.listenerTask latch:NO];
     self.listenerPermissionRequired = YES;
     [self updatePermissionStateFromEvent:event];
     if (muse_on_should_open_retry_permission_settings(
@@ -1231,20 +1350,22 @@ static void MuseOnAppConnectionSnapshot(
                    safetyFailure:self.listenerSafetyFailure];
     if (self.popover.shown) [self refreshMenu];
   } else if ([name isEqualToString:@"recovery_state"]) {
-    BOOL listenerConnected = [event[@"controllerConnected"] boolValue];
-    BOOL listenerMultiple = [event[@"multipleControllers"] boolValue];
+    MuseOnConnectionSnapshot recoveryTopology;
     NSString *recoveryOutcome = event[@"recoveryOutcome"];
     BOOL recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
     BOOL neutralEntryPending =
         [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
     BOOL recoveryFailed = [recoveryOutcome isEqualToString:@"failure"] ||
                           (!recoverySucceeded && !neutralEntryPending);
-    /* The listener may validate ownership, but never becomes the host's
-     * connection source. A disagreement keeps Retry fail-closed. */
-    self.listenerRecoveryValidated =
-        (recoverySucceeded || neutralEntryPending) &&
-        listenerConnected == self.controllerConnected &&
-        listenerMultiple == self.multipleControllers;
+    if (![self listenerTopologySnapshotFromEvent:event
+                                           snapshot:&recoveryTopology]) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
+    [self applyListenerTopologySnapshot:recoveryTopology];
+    /* Recovery is authoritative when its typed outcome is valid; it is not
+     * compared with a second host-owned HID observation. */
+    self.listenerRecoveryValidated = (recoverySucceeded || neutralEntryPending);
     self.listenerRecoveryFailed = recoveryFailed;
     self.inputsReleased = [event[@"inputsReleased"] boolValue];
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
@@ -1354,7 +1475,10 @@ static void MuseOnAppConnectionSnapshot(
         NSMakeRange(0, newline.location + 1) withBytes:NULL length:0];
     NSDictionary *event = [NSJSONSerialization JSONObjectWithData:line
                                                            options:0 error:nil];
-    if (![event isKindOfClass:[NSDictionary class]]) continue;
+    if (![event isKindOfClass:[NSDictionary class]]) {
+      [self recordListenerProtocolFailure];
+      continue;
+    }
     [self recordListenerEvent:event];
   }
 }
@@ -1412,6 +1536,13 @@ static void MuseOnAppConnectionSnapshot(
 
 - (void)processListenerOutputEOFForTask:(NSTask *)task {
   if (self.listenerTask != task) return;
+  if (self.listenerOutputBuffer.length != 0) {
+    [self recordListenerProtocolFailure];
+  } else {
+    BOOL unexpected = self.listenerStopPurpose == kListenerStopNone &&
+                      !self.listenerPermissionRequired;
+    [self invalidateListenerTopologyForTask:task latch:unexpected];
+  }
   self.listenerOutputHandle.readabilityHandler = nil;
   muse_on_listener_completion_gate_mark_stdout_eof(
       &_listenerCompletionGate);
@@ -1422,6 +1553,10 @@ static void MuseOnAppConnectionSnapshot(
   MuseOnListenerTerminationReason reason;
 
   if (self.listenerTask != finishedTask) return;
+  [self invalidateListenerTopologyForTask:
+      finishedTask
+      latch:(self.listenerStopPurpose == kListenerStopNone &&
+             !self.listenerPermissionRequired)];
   reason = finishedTask.terminationReason == NSTaskTerminationReasonExit
       ? MUSE_ON_LISTENER_TERMINATION_EXIT
       : (finishedTask.terminationReason == NSTaskTerminationReasonUncaughtSignal
@@ -1601,6 +1736,12 @@ static void MuseOnAppConnectionSnapshot(
     [arguments addObject:@"--request-permissions"];
   }
   task.arguments = arguments;
+  self.listenerTaskGeneration++;
+  if (self.listenerTaskGeneration == 0) self.listenerTaskGeneration = 1;
+  muse_on_topology_begin(&_topologyAuthority, self.listenerTaskGeneration);
+  self.controllerConnected = NO;
+  self.multipleControllers = NO;
+  self.controllerLocationID = 0;
   self.listenerRecoveryMode = safetyLatched;
   self.listenerRecoveryValidated = NO;
   self.listenerRecoveryFailed = NO;
@@ -1649,6 +1790,7 @@ static void MuseOnAppConnectionSnapshot(
     self.listenerEverStarted = YES;
     self.listenerCleanupKnown = NO;
   } @catch (__unused NSException *exception) {
+    [self invalidateListenerTopologyForTask:task latch:YES];
     self.listenerTask = nil;
     self.listenerRecoveryMode = NO;
     self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
@@ -1664,34 +1806,6 @@ static void MuseOnAppConnectionSnapshot(
 
 - (void)startListenerIfNeeded {
   [self startListenerWithSafetyLatch:NO];
-}
-
-- (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot {
-  BOOL nextControllerConnected = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
-  BOOL nextMultipleControllers = snapshot.state == MUSE_ON_CONNECTION_MULTIPLE;
-  BOOL topologyChanged = self.controllerConnected != nextControllerConnected ||
-                         self.multipleControllers != nextMultipleControllers;
-  self.controllerConnected = nextControllerConnected;
-  self.multipleControllers = nextMultipleControllers;
-  if (topologyChanged) self.inputsReleased = NO;
-  [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
-  if (self.popover.shown) [self refreshMenu];
-}
-
-- (void)startConnectionObserver {
-  if (!self.primaryInstance || self.connectionObserver) return;
-  self.connectionObserver = muse_on_connection_observer_create_native(
-      MuseOnAppConnectionSnapshot, (__bridge void *)self);
-  if (![self.connectionObserver start]) {
-    self.controllerConnected = NO;
-    self.multipleControllers = NO;
-    [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
-  }
-}
-
-- (void)stopConnectionObserver {
-  [self.connectionObserver stop];
-  self.connectionObserver = nil;
 }
 
 - (void)updateCoordinatorWithCommand:(MuseOnCommand)command {
@@ -2431,7 +2545,6 @@ static void MuseOnAppConnectionSnapshot(
   }
   self.primaryInstance = YES;
   [self loadSetup];
-  [self startConnectionObserver];
   [[[NSWorkspace sharedWorkspace] notificationCenter]
       addObserver:self
          selector:@selector(sessionDidChange:)
@@ -2464,7 +2577,6 @@ static void MuseOnAppConnectionSnapshot(
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   if (!self.primaryInstance) return;
-  [self stopConnectionObserver];
   [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
   muse_on_diagnostics_clear(&_diagnostics);
   if (self.lockFd >= 0) close(self.lockFd);

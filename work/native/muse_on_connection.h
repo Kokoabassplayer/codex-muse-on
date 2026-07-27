@@ -17,6 +17,7 @@ typedef struct {
 } MuseOnObservedInterface;
 
 typedef enum {
+  MUSE_ON_CONNECTION_UNKNOWN = -1,
   MUSE_ON_CONNECTION_DISCONNECTED = 0,
   MUSE_ON_CONNECTION_SINGLE,
   MUSE_ON_CONNECTION_MULTIPLE,
@@ -26,6 +27,11 @@ typedef struct {
   MuseOnConnectionState state;
   uint32_t location_id;
 } MuseOnConnectionSnapshot;
+
+/* Unknown is fail-closed and is emitted while a listener attempt settles. */
+const char *muse_on_connection_state_string(MuseOnConnectionState state);
+bool muse_on_connection_snapshot_is_valid(
+    MuseOnConnectionSnapshot snapshot);
 
 /* Classifies a complete read-only device snapshot. */
 MuseOnConnectionSnapshot muse_on_classify_connections(
