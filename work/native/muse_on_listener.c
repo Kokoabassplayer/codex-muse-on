@@ -86,6 +86,8 @@ struct ListenerState {
   MuseOnSafetyFailure safetyFailure;
   bool safetyLatchEmitted;
   bool recoveryStateEmitted;
+  bool recoveryErrorObserved;
+  MuseOnRecoveryPolicy recoveryPolicy;
   uint64_t filterRetryAfterNs;
   uint64_t permissionCheckAfterNs;
 };
@@ -192,7 +194,11 @@ static void refresh_permission_state(ListenerState *state, uint64_t nowNs) {
   }
 }
 
-static void emit_error(const char *operation, IOReturn code) {
+static void emit_error(ListenerState *state, const char *operation,
+                       IOReturn code) {
+  if (state && state->config.safety_latched) {
+    state->recoveryErrorObserved = true;
+  }
   printf("{\"event\":\"error\",\"operation\":\"%s\",\"code\":%d}\n",
          operation, (int)code);
 }
@@ -340,6 +346,8 @@ static void emit_recovery_state(ListenerState *state) {
   bool controllerConnected;
   bool filterVerified;
   bool inputsReleased;
+  MuseOnRecoveryDecision decision;
+  MuseOnRecoveryObservation observation;
 
   if (!state || state->recoveryStateEmitted) return;
   completeCount = complete_controller_count(state);
@@ -351,20 +359,41 @@ static void emit_recovery_state(ListenerState *state) {
                    muse_on_key_filter_is_active(state->keyFilter) &&
                    muse_on_key_filter_location_id(state->keyFilter) ==
                        controllerLocation;
-  /* Keep the recovery child alive until Neutral Entry can be observed when
-     every other Active prerequisite is already satisfied. */
-  if (controllerConnected && filter_permissions_ready(state) &&
-      state->codexFrontmost && filterVerified && !inputsReleased) {
+  observation = (MuseOnRecoveryObservation){
+      .permission_granted = filter_permissions_ready(state),
+      .controller_connected = controllerConnected,
+      .multiple_controllers = completeCount > 1,
+      .codex_foreground = state->codexFrontmost,
+      .inputs_released = inputsReleased,
+      .filter_verified = filterVerified,
+      .keyboard_open = state->keyboardOpen,
+      .error_observed = state->recoveryErrorObserved,
+  };
+  decision = muse_on_recovery_policy_evaluate(
+      &state->recoveryPolicy, monotonic_ns(), observation);
+  /* HID enumeration and filter proof may settle over several timer ticks.
+   * The safety latch already makes routing_is_enabled() return false. */
+  if (decision == MUSE_ON_RECOVERY_WAIT ||
+      decision == MUSE_ON_RECOVERY_DONE) {
     return;
   }
   printf("{\"event\":\"recovery_state\","
+         "\"recoverySucceeded\":%s,"
          "\"permissionGranted\":%s,\"controllerConnected\":%s,"
          "\"multipleControllers\":%s,\"codexForeground\":%s,"
          "\"inputsReleased\":%s,\"filterVerified\":%s,"
          "\"keyboardOpen\":%s}\n",
-         boolean_string(filter_permissions_ready(state)),
-         boolean_string(controllerConnected),
-         boolean_string(completeCount > 1),
+         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS),
+         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS &&
+                        filter_permissions_ready(state)),
+         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS
+                            ? controllerConnected
+                            : true),
+         /* The impossible pair makes every failure unambiguously fail closed
+          * to the host's existing topology-validation gate. */
+         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS
+                            ? completeCount > 1
+                            : true),
          boolean_string(state->codexFrontmost),
          boolean_string(inputsReleased), boolean_string(filterVerified),
          boolean_string(state->keyboardOpen));
@@ -570,12 +599,12 @@ static void report_received(void *context, IOReturn result, void *sender,
   if (!slot || slot->removed || slot->kind != managerContext->kind) return;
   if (!slot_matches_active_filter(state, slot)) return;
   if (result != kIOReturnSuccess) {
-    emit_error("input_report", result);
+    emit_error(state, "input_report", result);
     return;
   }
   if (type != kIOHIDReportTypeInput || !report || reportLength < 0 ||
       reportLength > slot->reportCapacity) {
-    emit_error("invalid_input_report", kIOReturnBadArgument);
+    emit_error(state, "invalid_input_report", kIOReturnBadArgument);
     return;
   }
 
@@ -670,7 +699,8 @@ static void device_added(void *context, IOReturn result, void *sender,
   (void)sender;
   if (result != kIOReturnSuccess || !managerContext ||
       !managerContext->state || !device) {
-    emit_error("device_added", result);
+    emit_error(managerContext ? managerContext->state : NULL,
+               "device_added", result);
     return;
   }
   state = managerContext->state;
@@ -681,7 +711,7 @@ static void device_added(void *context, IOReturn result, void *sender,
       !number_property(device, CFSTR(kIOHIDLocationIDKey), &locationID) ||
       !number_property(device, CFSTR(kIOHIDMaxInputReportSizeKey),
                        &maxInputReportSize)) {
-    emit_error("device_properties", kIOReturnBadArgument);
+    emit_error(state, "device_properties", kIOReturnBadArgument);
     return;
   }
   kind = classify_interface(usagePage, usage);
@@ -702,7 +732,7 @@ static void device_added(void *context, IOReturn result, void *sender,
   } else {
     slot = calloc(1, sizeof(*slot));
     if (!slot) {
-      emit_error("allocate_slot", kIOReturnNoMemory);
+      emit_error(state, "allocate_slot", kIOReturnNoMemory);
       return;
     }
     slot->device = (IOHIDDeviceRef)CFRetain(device);
@@ -738,7 +768,8 @@ static void device_removed(void *context, IOReturn result, void *sender,
   (void)sender;
   if (result != kIOReturnSuccess || !managerContext ||
       !managerContext->state || !device) {
-    emit_error("device_removed", result);
+    emit_error(managerContext ? managerContext->state : NULL,
+               "device_removed", result);
     return;
   }
   state = managerContext->state;
@@ -761,7 +792,7 @@ static void device_removed(void *context, IOReturn result, void *sender,
     force_release_synthetic_hold(state, "device_removed");
     if (muse_on_key_filter_needs_restore(state->keyFilter) &&
         !muse_on_key_filter_restore(state->keyFilter)) {
-      emit_error("restore_keyboard_filter", kIOReturnError);
+      emit_error(state, "restore_keyboard_filter", kIOReturnError);
       state->releaseFailed = true;
       emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
       stopRequested = 1;
@@ -789,7 +820,7 @@ static void restore_keyboard_filter(ListenerState *state,
   restoreNeeded = muse_on_key_filter_needs_restore(state->keyFilter);
   if (!restoreNeeded) return;
   if (!muse_on_key_filter_restore(state->keyFilter)) {
-    emit_error("restore_keyboard_filter", kIOReturnError);
+    emit_error(state, "restore_keyboard_filter", kIOReturnError);
     state->releaseFailed = true;
     emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
     stopRequested = 1;
@@ -810,7 +841,7 @@ static void activate_keyboard_filter(ListenerState *state,
   }
   if (muse_on_key_filter_needs_restore(state->keyFilter) &&
       !muse_on_key_filter_restore(state->keyFilter)) {
-    emit_error("recover_keyboard_filter", kIOReturnError);
+    emit_error(state, "recover_keyboard_filter", kIOReturnError);
     state->releaseFailed = true;
     emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
     stopRequested = 1;
@@ -828,10 +859,10 @@ static void activate_keyboard_filter(ListenerState *state,
     return;
   }
   if (!muse_on_key_filter_apply(state->keyFilter, keyboardSlot->locationID)) {
-    emit_error("apply_keyboard_filter", kIOReturnError);
+    emit_error(state, "apply_keyboard_filter", kIOReturnError);
     if (muse_on_key_filter_needs_restore(state->keyFilter) &&
         !muse_on_key_filter_restore(state->keyFilter)) {
-      emit_error("rollback_keyboard_filter", kIOReturnError);
+      emit_error(state, "rollback_keyboard_filter", kIOReturnError);
       state->releaseFailed = true;
       emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
       stopRequested = 1;
@@ -1069,7 +1100,7 @@ int main(int argc, char *argv[]) {
   state.keyboardManager = create_manager(&state, &state.keyboardContext);
   state.keyFilter = muse_on_key_filter_create();
   if (!state.joystickManager || !state.keyboardManager || !state.keyFilter) {
-    emit_error("create_hid_managers", kIOReturnNoMemory);
+    emit_error(&state, "create_hid_managers", kIOReturnNoMemory);
     muse_on_key_filter_destroy(state.keyFilter);
     unschedule_and_release_manager(&state, state.keyboardManager);
     unschedule_and_release_manager(&state, state.joystickManager);
@@ -1083,7 +1114,7 @@ int main(int argc, char *argv[]) {
       emit_permission_required(&state, "input_monitoring");
       goto shutdown;
     }
-    emit_error("open_joystick_manager", opened);
+    emit_error(&state, "open_joystick_manager", opened);
     muse_on_key_filter_destroy(state.keyFilter);
     unschedule_and_release_manager(&state, state.keyboardManager);
     unschedule_and_release_manager(&state, state.joystickManager);
@@ -1098,7 +1129,7 @@ int main(int argc, char *argv[]) {
       IOHIDManagerClose(state.joystickManager, kIOHIDOptionsTypeNone);
       goto shutdown;
     }
-    emit_error("open_keyboard_manager", opened);
+    emit_error(&state, "open_keyboard_manager", opened);
     IOHIDManagerClose(state.joystickManager, kIOHIDOptionsTypeNone);
     muse_on_key_filter_destroy(state.keyFilter);
     unschedule_and_release_manager(&state, state.keyboardManager);
@@ -1109,6 +1140,9 @@ int main(int argc, char *argv[]) {
   if (state.config.mode != MUSE_ON_MODE_DRY_RUN) {
     update_focus_and_filter(&state, monotonic_ns());
   }
+  if (state.config.safety_latched) {
+    muse_on_recovery_policy_init(&state.recoveryPolicy, monotonic_ns());
+  }
 
   timerContext = (CFRunLoopTimerContext){0, &state, NULL, NULL, NULL};
   timer = CFRunLoopTimerCreate(
@@ -1116,7 +1150,7 @@ int main(int argc, char *argv[]) {
       CFAbsoluteTimeGetCurrent() + kActionFlushIntervalSeconds,
       kActionFlushIntervalSeconds, 0, 0, action_timer, &timerContext);
   if (!timer) {
-    emit_error("create_action_timer", kIOReturnNoMemory);
+    emit_error(&state, "create_action_timer", kIOReturnNoMemory);
     exitCode = 1;
   } else {
     CFRunLoopAddTimer(state.runLoop, timer, kCFRunLoopDefaultMode);
@@ -1142,7 +1176,7 @@ shutdown:
         keyboardClosed != kIOReturnNotOpen &&
         keyboardClosed != kIOReturnNoDevice &&
         keyboardClosed != kIOReturnOffline) {
-      emit_error("close_keyboard_manager", keyboardClosed);
+      emit_error(&state, "close_keyboard_manager", keyboardClosed);
       state.releaseFailed = true;
       emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
     } else {
@@ -1151,7 +1185,7 @@ shutdown:
   }
   opened = IOHIDManagerClose(state.joystickManager, kIOHIDOptionsTypeNone);
   if (opened != kIOReturnSuccess && opened != kIOReturnNotOpen) {
-    emit_error("close_joystick_manager", opened);
+    emit_error(&state, "close_joystick_manager", opened);
     state.releaseFailed = true;
     emit_safety_latch(&state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
   }

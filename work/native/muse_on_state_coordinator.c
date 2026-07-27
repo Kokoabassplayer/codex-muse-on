@@ -111,6 +111,38 @@ void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites) {
   prerequisites->inputs_released = false;
 }
 
+void muse_on_recovery_policy_init(MuseOnRecoveryPolicy *policy,
+                                  uint64_t started_at_ns) {
+  if (!policy) return;
+  policy->started_at_ns = started_at_ns;
+  policy->emitted = false;
+}
+
+MuseOnRecoveryDecision muse_on_recovery_policy_evaluate(
+    MuseOnRecoveryPolicy *policy, uint64_t now_ns,
+    MuseOnRecoveryObservation observation) {
+  uint64_t elapsed_ns = 0;
+
+  if (!policy || policy->emitted) return MUSE_ON_RECOVERY_DONE;
+  if (now_ns >= policy->started_at_ns) {
+    elapsed_ns = now_ns - policy->started_at_ns;
+  }
+
+  if (observation.permission_granted &&
+      observation.controller_connected &&
+      !observation.multiple_controllers && observation.codex_foreground &&
+      observation.inputs_released && observation.filter_verified &&
+      observation.keyboard_open && !observation.error_observed) {
+    policy->emitted = true;
+    return MUSE_ON_RECOVERY_SUCCESS;
+  }
+  if (elapsed_ns >= MUSE_ON_RECOVERY_SETTLEMENT_NS) {
+    policy->emitted = true;
+    return MUSE_ON_RECOVERY_FAILURE;
+  }
+  return MUSE_ON_RECOVERY_WAIT;
+}
+
 bool muse_on_recovery_filter_restoration_unverified(
     bool recovery_validated, bool cleanup_verified, bool permission_granted,
     bool controller_connected, bool multiple_controllers,

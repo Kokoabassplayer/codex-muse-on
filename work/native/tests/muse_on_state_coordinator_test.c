@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "../muse_on_state_coordinator.h"
@@ -656,6 +657,60 @@ static void test_disconnect_recovers_on_reconnect(void) {
   assert(state.status == MUSE_ON_STATUS_ACTIVE);
 }
 
+/* Recovery waits through HID enumeration and emits exactly once. */
+static void test_recovery_policy_settles_before_emitting(void) {
+  MuseOnRecoveryPolicy policy;
+  MuseOnRecoveryObservation observation = {
+      .permission_granted = true,
+      .controller_connected = false,
+      .multiple_controllers = false,
+      .codex_foreground = true,
+      .inputs_released = false,
+      .filter_verified = false,
+      .keyboard_open = true,
+      .error_observed = false,
+  };
+
+  muse_on_recovery_policy_init(&policy, 100);
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 10000000,
+                                          observation) ==
+         MUSE_ON_RECOVERY_WAIT);
+
+  /* A changing or ambiguous topology remains in the settlement window. */
+  observation.controller_connected = true;
+  observation.multiple_controllers = true;
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 500000000,
+                                          observation) ==
+         MUSE_ON_RECOVERY_WAIT);
+
+  observation.multiple_controllers = false;
+  observation.filter_verified = true;
+  observation.inputs_released = true;
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 900000000,
+                                          observation) ==
+         MUSE_ON_RECOVERY_SUCCESS);
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 950000000,
+                                          observation) ==
+         MUSE_ON_RECOVERY_DONE);
+}
+
+/* A stalled recovery fails once at the bounded deadline and stays fail-closed. */
+static void test_recovery_policy_timeout_is_fail_closed(void) {
+  MuseOnRecoveryPolicy policy;
+  MuseOnRecoveryObservation observation = {.error_observed = true};
+
+  muse_on_recovery_policy_init(&policy, 2000);
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 2000 + MUSE_ON_RECOVERY_SETTLEMENT_NS / 2,
+             observation) == MUSE_ON_RECOVERY_WAIT);
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 2000 + MUSE_ON_RECOVERY_SETTLEMENT_NS, observation) ==
+         MUSE_ON_RECOVERY_FAILURE);
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 2000 + MUSE_ON_RECOVERY_SETTLEMENT_NS + 1, observation) ==
+         MUSE_ON_RECOVERY_DONE);
+}
+
 /* ---- String helpers ---- */
 
 static void test_status_strings(void) {
@@ -750,6 +805,8 @@ int main(void) {
   test_ordinary_gates_auto_recover_without_latch();
   test_safe_quit_requires_verified_cleanup();
   test_disconnect_recovers_on_reconnect();
+  test_recovery_policy_settles_before_emitting();
+  test_recovery_policy_timeout_is_fail_closed();
   test_status_strings();
   test_inactive_reason_strings();
   test_safety_failure_strings();

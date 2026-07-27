@@ -2,6 +2,7 @@
 #define MUSE_ON_STATE_COORDINATOR_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /*
  * Deterministic application state coordinator.
@@ -59,6 +60,32 @@ typedef enum {
   MUSE_ON_COMMAND_RETRY,
   MUSE_ON_COMMAND_QUIT
 } MuseOnCommand;
+
+/* Recovery HID settlement is bounded to the existing one-second retry cadence. */
+#define MUSE_ON_RECOVERY_SETTLEMENT_NS UINT64_C(1000000000)
+
+typedef enum {
+  MUSE_ON_RECOVERY_WAIT = 0,
+  MUSE_ON_RECOVERY_SUCCESS,
+  MUSE_ON_RECOVERY_FAILURE,
+  MUSE_ON_RECOVERY_DONE
+} MuseOnRecoveryDecision;
+
+typedef struct {
+  bool permission_granted;
+  bool controller_connected; /* exactly one paired Muse-On */
+  bool multiple_controllers;
+  bool codex_foreground;
+  bool inputs_released;
+  bool filter_verified;
+  bool keyboard_open;
+  bool error_observed;
+} MuseOnRecoveryObservation;
+
+typedef struct {
+  uint64_t started_at_ns;
+  bool emitted;
+} MuseOnRecoveryPolicy;
 
 /*
  * Observed platform prerequisites. All fields are plain values supplied by
@@ -118,6 +145,13 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
 
 /* Listener startup and recovery are not Neutral Entry evidence. */
 void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites);
+
+/* Decide whether recovery is still settling or may emit one terminal snapshot. */
+void muse_on_recovery_policy_init(MuseOnRecoveryPolicy *policy,
+                                  uint64_t started_at_ns);
+MuseOnRecoveryDecision muse_on_recovery_policy_evaluate(
+    MuseOnRecoveryPolicy *policy, uint64_t now_ns,
+    MuseOnRecoveryObservation observation);
 
 /* A missing filter is unsafe only before clean recovery is verified. */
 bool muse_on_recovery_filter_restoration_unverified(
