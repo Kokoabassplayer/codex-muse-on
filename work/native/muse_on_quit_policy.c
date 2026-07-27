@@ -2,6 +2,9 @@
 
 MuseOnQuitPolicyDecision muse_on_quit_policy_decide(
     MuseOnQuitPolicyInput input) {
+  if (input.quit_in_flight) {
+    return MUSE_ON_QUIT_POLICY_WAIT_FOR_IN_FLIGHT_QUIT;
+  }
   if (input.unclean_quit_authorized) {
     return MUSE_ON_QUIT_POLICY_TERMINATE_UNCLEAN_QUIT;
   }

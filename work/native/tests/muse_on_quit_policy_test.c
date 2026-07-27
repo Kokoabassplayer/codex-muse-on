@@ -7,6 +7,7 @@ static MuseOnQuitPolicyInput normal_input(void) {
       .safety_latched = false,
       .disable_pending = false,
       .unclean_quit_authorized = false,
+      .quit_in_flight = false,
   };
 }
 
@@ -57,10 +58,27 @@ static void test_routine_states_never_show_exceptional_quit_policy(void) {
          MUSE_ON_QUIT_POLICY_TERMINATE_UNCLEAN_QUIT);
 }
 
+static void test_direct_quit_requires_confirmation_and_allows_one_attempt(void) {
+  MuseOnQuitPolicyInput input = normal_input();
+
+  input.safety_latched = true;
+  assert(muse_on_quit_policy_decide(input) ==
+         MUSE_ON_QUIT_POLICY_CONFIRM_UNCLEAN_QUIT);
+
+  input.unclean_quit_authorized = true;
+  assert(muse_on_quit_policy_decide(input) ==
+         MUSE_ON_QUIT_POLICY_TERMINATE_UNCLEAN_QUIT);
+
+  input.quit_in_flight = true;
+  assert(muse_on_quit_policy_decide(input) ==
+         MUSE_ON_QUIT_POLICY_WAIT_FOR_IN_FLIGHT_QUIT);
+}
+
 int main(void) {
   test_normal_safe_quit_boundary();
   test_latch_requires_exceptional_confirmation();
   test_only_explicit_authorization_terminates_uncleanly();
   test_routine_states_never_show_exceptional_quit_policy();
+  test_direct_quit_requires_confirmation_and_allows_one_attempt();
   return 0;
 }

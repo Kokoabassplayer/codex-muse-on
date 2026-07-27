@@ -14,6 +14,7 @@ mkdir -p "$MACOS_DIR"
 
 clang -std=c11 -Wall -Wextra -Werror -pedantic -fobjc-arc -I"$NATIVE_DIR" \
   "$NATIVE_DIR/muse_on_menu_bar.m" \
+  "$NATIVE_DIR/muse_on_quit_policy.c" \
   "$NATIVE_DIR/muse_on_platform.m" \
   "$NATIVE_DIR/muse_on_state_coordinator.c" \
   "$NATIVE_DIR/muse_on_setup_state.c" \
