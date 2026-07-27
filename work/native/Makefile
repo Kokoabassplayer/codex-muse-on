@@ -90,7 +90,7 @@ muse_on_connection_test: muse_on_connection.c tests/muse_on_connection_test.c \
 muse_on_connection_observer_test: muse_on_connection.c muse_on_connection_observer.m \
 		tests/muse_on_connection_observer_test.m muse_on_connection.h \
 		muse_on_connection_observer.h
-	$(CC) $(CFLAGS) -fobjc-arc -I. muse_on_connection.c \
+	$(CC) $(CFLAGS) -DMUSE_ON_CONNECTION_OBSERVER_TESTING -fobjc-arc -I. muse_on_connection.c \
 		muse_on_connection_observer.m tests/muse_on_connection_observer_test.m \
 		-framework Foundation -framework IOKit -framework CoreFoundation -o $@
 

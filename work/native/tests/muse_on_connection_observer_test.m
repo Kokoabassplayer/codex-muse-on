@@ -3,8 +3,25 @@
 #include <assert.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <IOKit/hid/IOHIDUsageTables.h>
 
 #include "../muse_on_connection_observer.h"
+
+typedef struct {
+  uint32_t vendor_id;
+  uint32_t product_id;
+  uint32_t usage_page;
+  uint32_t usage;
+  uint32_t location_id;
+} MuseOnConnectionObserverTestDevice;
+
+extern MuseOnConnectionSnapshot muse_on_connection_observer_test_snapshot(
+    const MuseOnConnectionObserverTestDevice *devices, size_t count);
+
+enum {
+  kTestMuseOnVendorID = 0x04b4,
+  kTestMuseOnProductID = 0xe106,
+};
 
 typedef struct {
   bool started;
@@ -14,7 +31,16 @@ typedef struct {
   MuseOnConnectionObserverEmit emit;
   void *emit_context;
   size_t dispatch_count;
+  const MuseOnConnectionObserverTestDevice *devices;
+  size_t device_count;
 } FakeObserverBackend;
+
+static MuseOnConnectionObserverTestDevice fake_device(uint32_t usage,
+                                                       uint32_t location) {
+  return (MuseOnConnectionObserverTestDevice){
+      kTestMuseOnVendorID, kTestMuseOnProductID, kHIDPage_GenericDesktop, usage,
+      location};
+}
 
 static bool fake_start(void *context, MuseOnConnectionObserverEmit emit,
                        void *emit_context) {
@@ -24,8 +50,8 @@ static bool fake_start(void *context, MuseOnConnectionObserverEmit emit,
   fake->start_count++;
   fake->emit = emit;
   fake->emit_context = emit_context;
-  emit(emit_context,
-       (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_SINGLE, 0x110000});
+  emit(emit_context, muse_on_connection_observer_test_snapshot(
+                         fake->devices, fake->device_count));
   return true;
 }
 
@@ -63,9 +89,67 @@ static void drain_main_queue(void) {
   CFRunLoopRun();
 }
 
+static void test_fake_backend_ignores_mouse_and_preserves_topology(void) {
+  MuseOnConnectionObserverTestDevice complete_with_mouse[] = {
+      fake_device(kHIDUsage_GD_Keyboard, 0x110000),
+      fake_device(kHIDUsage_GD_Joystick, 0x110000),
+      fake_device(kHIDUsage_GD_Mouse, 0x110000),
+  };
+  MuseOnConnectionObserverTestDevice partial_with_mouse[] = {
+      fake_device(kHIDUsage_GD_Keyboard, 0x110000),
+      fake_device(kHIDUsage_GD_Mouse, 0x110000),
+  };
+  MuseOnConnectionObserverTestDevice mismatched_with_mouse[] = {
+      fake_device(kHIDUsage_GD_Keyboard, 1),
+      fake_device(kHIDUsage_GD_Joystick, 2),
+      fake_device(kHIDUsage_GD_Mouse, 1),
+  };
+  MuseOnConnectionObserverTestDevice duplicate_with_mouse[] = {
+      fake_device(kHIDUsage_GD_Keyboard, 1),
+      fake_device(kHIDUsage_GD_Keyboard, 1),
+      fake_device(kHIDUsage_GD_Joystick, 1),
+      fake_device(kHIDUsage_GD_Mouse, 1),
+  };
+  MuseOnConnectionObserverTestDevice multiple_with_mouse[] = {
+      fake_device(kHIDUsage_GD_Keyboard, 1),
+      fake_device(kHIDUsage_GD_Joystick, 1),
+      fake_device(kHIDUsage_GD_Keyboard, 2),
+      fake_device(kHIDUsage_GD_Joystick, 2),
+      fake_device(kHIDUsage_GD_Mouse, 1),
+  };
+
+  assert(muse_on_connection_observer_test_snapshot(
+             complete_with_mouse, sizeof(complete_with_mouse) /
+                                      sizeof(complete_with_mouse[0]))
+             .state == MUSE_ON_CONNECTION_SINGLE);
+  assert(muse_on_connection_observer_test_snapshot(
+             partial_with_mouse,
+             sizeof(partial_with_mouse) / sizeof(partial_with_mouse[0]))
+             .state == MUSE_ON_CONNECTION_DISCONNECTED);
+  assert(muse_on_connection_observer_test_snapshot(
+             mismatched_with_mouse,
+             sizeof(mismatched_with_mouse) / sizeof(mismatched_with_mouse[0]))
+             .state == MUSE_ON_CONNECTION_DISCONNECTED);
+  assert(muse_on_connection_observer_test_snapshot(
+             duplicate_with_mouse,
+             sizeof(duplicate_with_mouse) / sizeof(duplicate_with_mouse[0]))
+             .state == MUSE_ON_CONNECTION_DISCONNECTED);
+  assert(muse_on_connection_observer_test_snapshot(
+             multiple_with_mouse,
+             sizeof(multiple_with_mouse) / sizeof(multiple_with_mouse[0]))
+             .state == MUSE_ON_CONNECTION_MULTIPLE);
+}
+
 static void test_injected_observer_is_main_queue_and_fail_closed_on_stop(void) {
   FakeObserverBackend fake = {0};
   CallbackState callback = {0};
+  MuseOnConnectionObserverTestDevice devices[] = {
+      fake_device(kHIDUsage_GD_Keyboard, 0x110000),
+      fake_device(kHIDUsage_GD_Joystick, 0x110000),
+      fake_device(kHIDUsage_GD_Mouse, 0x110000),
+  };
+  fake.devices = devices;
+  fake.device_count = sizeof(devices) / sizeof(devices[0]);
   MuseOnConnectionObserverBackend backend = {
       &fake, fake_start, fake_stop, NULL};
   MuseOnConnectionObserver *observer = [[MuseOnConnectionObserver alloc]
@@ -102,6 +186,7 @@ static void test_injected_observer_is_main_queue_and_fail_closed_on_stop(void) {
 
 int main(void) {
   @autoreleasepool {
+    test_fake_backend_ignores_mouse_and_preserves_topology();
     test_injected_observer_is_main_queue_and_fail_closed_on_stop();
   }
   return 0;

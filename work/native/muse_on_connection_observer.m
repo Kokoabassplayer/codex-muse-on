@@ -20,6 +20,14 @@ typedef struct {
   bool active;
 } MuseOnNativeBackend;
 
+typedef struct {
+  uint32_t vendor_id;
+  uint32_t product_id;
+  uint32_t usage_page;
+  uint32_t usage;
+  uint32_t location_id;
+} MuseOnDeviceIdentity;
+
 static bool read_number(IOHIDDeviceRef device, CFStringRef key,
                         uint32_t *value) {
   CFTypeRef property;
@@ -40,45 +48,76 @@ static bool device_identity(IOHIDDeviceRef device, uint32_t *vendor_id,
          read_number(device, CFSTR(kIOHIDLocationIDKey), location_id);
 }
 
+static MuseOnConnectionSnapshot classify_identities(
+    const MuseOnDeviceIdentity *identities, size_t count) {
+  MuseOnObservedInterface interfaces[kMuseOnSnapshotCapacity];
+  size_t interface_count = 0;
+  size_t index;
+
+  if (!identities || count == 0) {
+    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+  }
+  for (index = 0; index < count; index++) {
+    MuseOnObservedInterfaceKind kind;
+
+    if (identities[index].vendor_id != kMuseOnVendorID ||
+        identities[index].product_id != kMuseOnProductID ||
+        identities[index].usage_page != kHIDPage_GenericDesktop) {
+      return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+    }
+    if (identities[index].usage == kHIDUsage_GD_Keyboard) {
+      kind = MUSE_ON_OBSERVED_KEYBOARD;
+    } else if (identities[index].usage == kHIDUsage_GD_Joystick) {
+      kind = MUSE_ON_OBSERVED_JOYSTICK;
+    } else {
+      continue;
+    }
+    if (interface_count == kMuseOnSnapshotCapacity) {
+      return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+    }
+    interfaces[interface_count++] =
+        (MuseOnObservedInterface){kind, identities[index].location_id, true};
+  }
+  return muse_on_classify_connections(interfaces, interface_count);
+}
+
 static MuseOnConnectionSnapshot native_snapshot(
     const MuseOnNativeBackend *backend) {
-  MuseOnObservedInterface interfaces[kMuseOnSnapshotCapacity];
+  MuseOnDeviceIdentity identities[kMuseOnSnapshotCapacity];
   CFIndex index;
   CFIndex count;
+  size_t identity_count = 0;
 
   if (!backend || !backend->active || !backend->devices) {
     return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
   }
   count = CFArrayGetCount(backend->devices);
-  if (count <= 0 || count > kMuseOnSnapshotCapacity) {
+  if (count <= 0) {
     return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
   }
   for (index = 0; index < count; index++) {
     IOHIDDeviceRef device = (IOHIDDeviceRef)CFArrayGetValueAtIndex(
         backend->devices, index);
-    uint32_t vendor_id = 0;
-    uint32_t product_id = 0;
-    uint32_t usage_page = 0;
-    uint32_t usage = 0;
-    uint32_t location_id = 0;
-    MuseOnObservedInterfaceKind kind;
+    MuseOnDeviceIdentity identity = {0};
 
-    if (!device_identity(device, &vendor_id, &product_id, &usage_page, &usage,
-                         &location_id) ||
-        vendor_id != kMuseOnVendorID || product_id != kMuseOnProductID ||
-        usage_page != kHIDPage_GenericDesktop || location_id == 0) {
+    if (!device_identity(device, &identity.vendor_id, &identity.product_id,
+                         &identity.usage_page, &identity.usage,
+                         &identity.location_id)) {
       return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
     }
-    if (usage == kHIDUsage_GD_Keyboard) {
-      kind = MUSE_ON_OBSERVED_KEYBOARD;
-    } else if (usage == kHIDUsage_GD_Joystick) {
-      kind = MUSE_ON_OBSERVED_JOYSTICK;
-    } else {
+    if (identity.usage == kHIDUsage_GD_Keyboard ||
+        identity.usage == kHIDUsage_GD_Joystick) {
+      if (identity_count == kMuseOnSnapshotCapacity) {
+        return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+      }
+      identities[identity_count++] = identity;
+    } else if (identity.vendor_id != kMuseOnVendorID ||
+               identity.product_id != kMuseOnProductID ||
+               identity.usage_page != kHIDPage_GenericDesktop) {
       return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
     }
-    interfaces[index] = (MuseOnObservedInterface){kind, location_id, true};
   }
-  return muse_on_classify_connections(interfaces, (size_t)count);
+  return classify_identities(identities, identity_count);
 }
 
 static void emit_snapshot(MuseOnNativeBackend *backend) {
@@ -107,6 +146,14 @@ static void device_added(void *context, IOReturn result, void *sender,
       !device_identity(device, &vendor_id, &product_id, &usage_page, &usage,
                        &location_id)) {
     emit_disconnected(backend);
+    return;
+  }
+  if (vendor_id != kMuseOnVendorID || product_id != kMuseOnProductID ||
+      usage_page != kHIDPage_GenericDesktop) {
+    emit_disconnected(backend);
+    return;
+  }
+  if (usage != kHIDUsage_GD_Keyboard && usage != kHIDUsage_GD_Joystick) {
     return;
   }
   if (!CFArrayContainsValue(backend->devices,
@@ -237,6 +284,15 @@ static void native_destroy(void *context) {
   native_stop(backend);
   free(backend);
 }
+
+#ifdef MUSE_ON_CONNECTION_OBSERVER_TESTING
+typedef MuseOnDeviceIdentity MuseOnConnectionObserverTestDevice;
+
+MuseOnConnectionSnapshot muse_on_connection_observer_test_snapshot(
+    const MuseOnConnectionObserverTestDevice *devices, size_t count) {
+  return classify_identities(devices, count);
+}
+#endif
 
 @interface MuseOnConnectionObserver ()
 @property(nonatomic) MuseOnConnectionObserverBackend backend;
