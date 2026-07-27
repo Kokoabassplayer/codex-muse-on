@@ -66,6 +66,39 @@ bool muse_on_request_input_monitoring_access(void) {
   return IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
 }
 
+bool muse_on_should_launch_listener_probe(bool enabled, bool safety_latched,
+                                          bool listener_running) {
+  return enabled && !safety_latched && !listener_running;
+}
+
+MuseOnPermissionGate muse_on_listener_missing_permission_gates(
+    const char *input_monitoring, bool accessibility_granted) {
+  MuseOnPermissionGate gates = MUSE_ON_PERMISSION_GATE_NONE;
+
+  if (input_monitoring == NULL || strcmp(input_monitoring, "granted") != 0) {
+    gates = (MuseOnPermissionGate)(gates |
+                                   MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+  }
+  if (!accessibility_granted) {
+    gates = (MuseOnPermissionGate)(gates |
+                                   MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+  }
+  return gates;
+}
+
+bool muse_on_should_open_retry_permission_settings(
+    bool retry_requested, bool authoritative, MuseOnPermissionGate missing,
+    bool destination_already_opened) {
+  return retry_requested && authoritative &&
+         missing != MUSE_ON_PERMISSION_GATE_NONE &&
+         !destination_already_opened;
+}
+
+bool muse_on_listener_request_mode_is_explicit(bool first_enable,
+                                               bool request_permissions) {
+  return first_enable && request_permissions;
+}
+
 MuseOnPermissionGate muse_on_missing_permission_gates(
     bool input_monitoring_granted, bool accessibility_granted) {
   MuseOnPermissionGate gates = MUSE_ON_PERMISSION_GATE_NONE;

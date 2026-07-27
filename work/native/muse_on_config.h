@@ -15,6 +15,7 @@ typedef struct {
   MuseOnProfile profile;
   MuseOnMode mode;
   bool safety_latched; /* recovery mode: never dispatch actions */
+  bool request_permissions; /* explicit First Enable flow, helper identity */
 } MuseOnConfig;
 
 bool muse_on_config_parse(int argc, const char *const argv[],

@@ -32,6 +32,15 @@ bool muse_on_request_post_event_access(void);
 bool muse_on_input_monitoring_access_granted(void);
 bool muse_on_input_monitoring_access_unknown(void);
 bool muse_on_request_input_monitoring_access(void);
+bool muse_on_should_launch_listener_probe(bool enabled, bool safety_latched,
+                                          bool listener_running);
+MuseOnPermissionGate muse_on_listener_missing_permission_gates(
+    const char *input_monitoring, bool accessibility_granted);
+bool muse_on_should_open_retry_permission_settings(
+    bool retry_requested, bool authoritative, MuseOnPermissionGate missing,
+    bool destination_already_opened);
+bool muse_on_listener_request_mode_is_explicit(bool first_enable,
+                                               bool request_permissions);
 MuseOnPermissionGate muse_on_missing_permission_gates(
     bool input_monitoring_granted, bool accessibility_granted);
 MuseOnPermissionGate muse_on_retry_permission_gate(

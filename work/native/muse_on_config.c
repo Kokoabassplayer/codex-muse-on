@@ -8,12 +8,14 @@ bool muse_on_config_parse(int argc, const char *const argv[],
   bool mode_seen = false;
   bool profile_seen = false;
   bool safety_seen = false;
+  bool request_seen = false;
   int index;
 
   if (!config || argc < 1 || !argv) return false;
   candidate.profile = MUSE_ON_PROFILE_CONTROLLER_ONLY;
   candidate.mode = MUSE_ON_MODE_DRY_RUN;
   candidate.safety_latched = false;
+  candidate.request_permissions = false;
 
   for (index = 1; index < argc; index++) {
     const char *argument = argv[index];
@@ -49,6 +51,17 @@ bool muse_on_config_parse(int argc, const char *const argv[],
       continue;
     }
 
+    if (strcmp(argument, "--request-permissions") == 0) {
+      if (request_seen) return false;
+      request_seen = true;
+      candidate.request_permissions = true;
+      continue;
+    }
+
+    return false;
+  }
+  if (candidate.request_permissions &&
+      (candidate.mode != MUSE_ON_MODE_ACTIVE || candidate.safety_latched)) {
     return false;
   }
   *config = candidate;

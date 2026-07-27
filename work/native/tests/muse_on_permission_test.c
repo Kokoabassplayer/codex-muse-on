@@ -45,6 +45,20 @@ static void test_generic_keyboard_manager_error_remains_safety_latch(void) {
   assert(state.effects.request_dispatch == false);
 }
 
+static void test_safety_failure_retains_priority_over_permission_state(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.permission_granted = false;
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_SAFETY_LATCH);
+  assert(state.safety_failure == MUSE_ON_SAFETY_FAILURE_HOLD_RELEASE);
+  assert(state.effects.request_dispatch == false);
+}
+
 static void test_not_permitted_keyboard_manager_error_is_permission_routed(void) {
   assert(muse_on_listener_error_is_permission_required(
       "open_keyboard_manager", kIOReturnNotPermitted));
@@ -63,6 +77,36 @@ static void test_input_monitoring_request_is_first_enable_only_and_once(void) {
   assert(!muse_on_should_request_input_monitoring(false, false, false));
   /* Retry supplies checks only; it never enters the First Enable request path. */
   assert(!muse_on_should_request_input_monitoring(false, true, false));
+}
+
+static void test_listener_probe_ignores_host_preflight_and_is_single_owned(void) {
+  /* The probe decision has no host-TCC input: a false host preflight cannot
+   * prevent the helper identity from reporting its own authoritative state. */
+  assert(muse_on_should_launch_listener_probe(true, false, false));
+  assert(!muse_on_should_launch_listener_probe(true, false, true));
+  assert(!muse_on_should_launch_listener_probe(false, false, false));
+  assert(!muse_on_should_launch_listener_probe(true, true, false));
+}
+
+static void test_retry_routes_once_after_authoritative_listener_event(void) {
+  MuseOnPermissionGate missing = muse_on_listener_missing_permission_gates(
+      "granted", false);
+
+  assert(missing == MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+  assert(muse_on_should_open_retry_permission_settings(
+      true, true, missing, false));
+  assert(!muse_on_should_open_retry_permission_settings(
+      true, true, missing, true));
+  assert(!muse_on_should_open_retry_permission_settings(
+      true, false, missing, false));
+
+  missing = muse_on_listener_missing_permission_gates("denied", false);
+  assert(missing == (MUSE_ON_PERMISSION_GATE_INPUT_MONITORING |
+                     MUSE_ON_PERMISSION_GATE_ACCESSIBILITY));
+  assert(muse_on_retry_permission_gate(
+             (missing & MUSE_ON_PERMISSION_GATE_INPUT_MONITORING) == 0,
+             (missing & MUSE_ON_PERMISSION_GATE_ACCESSIBILITY) == 0) ==
+         MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
 }
 
 static void test_missing_permission_gates_are_specific(void) {
@@ -125,6 +169,9 @@ static void test_permission_requests_require_first_enable_and_are_once_only(void
   }
   assert(!muse_on_should_request_permission(MUSE_ON_PERMISSION_GATE_NONE,
                                             true, true, false));
+  assert(muse_on_listener_request_mode_is_explicit(true, true));
+  assert(!muse_on_listener_request_mode_is_explicit(false, true));
+  assert(!muse_on_listener_request_mode_is_explicit(true, false));
 }
 
 static void test_permission_recovery_requires_fresh_neutral_entry(void) {
@@ -168,8 +215,11 @@ static void test_permission_recovery_requires_fresh_neutral_entry(void) {
 int main(void) {
   test_denied_input_monitoring_is_permission_required_and_blocked();
   test_generic_keyboard_manager_error_remains_safety_latch();
+  test_safety_failure_retains_priority_over_permission_state();
   test_not_permitted_keyboard_manager_error_is_permission_routed();
   test_input_monitoring_request_is_first_enable_only_and_once();
+  test_listener_probe_ignores_host_preflight_and_is_single_owned();
+  test_retry_routes_once_after_authoritative_listener_event();
   test_missing_permission_gates_are_specific();
   test_retry_guides_next_missing_permission_without_requests();
   test_permission_guidance_selects_exact_settings_destinations();

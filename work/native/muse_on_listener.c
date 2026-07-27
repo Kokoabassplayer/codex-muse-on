@@ -1026,8 +1026,11 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, stop_signal);
 
   inputAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
-  printf("{\"event\":\"tcc_status\",\"inputMonitoring\":\"%s\"}\n",
-         access_name(inputAccess));
+  if (state.config.request_permissions &&
+      inputAccess != kIOHIDAccessTypeGranted) {
+    (void)IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+    inputAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
+  }
   if (inputAccess != kIOHIDAccessTypeGranted) {
     printf("{\"event\":\"warning\",\"operation\":\"input_monitoring\","
            "\"action\":\"grant_in_settings_then_retry\"}\n");
@@ -1036,10 +1039,16 @@ int main(int argc, char *argv[]) {
 
   if (state.config.mode == MUSE_ON_MODE_ACTIVE) {
     state.postEventAccess = muse_on_preflight_post_event_access();
-    printf("{\"event\":\"tcc_status\",\"accessibility\":%s}\n",
-           boolean_string(state.postEventAccess));
+    if (state.config.request_permissions && !state.postEventAccess) {
+      (void)muse_on_request_post_event_access();
+      state.postEventAccess = muse_on_preflight_post_event_access();
+    }
   }
   state.permissionsKnown = true;
+
+  printf("{\"event\":\"tcc_status\",\"inputMonitoring\":\"%s\","
+         "\"accessibility\":%s}\n",
+         access_name(inputAccess), boolean_string(state.postEventAccess));
 
   if (state.config.mode == MUSE_ON_MODE_ACTIVE &&
       !filter_permissions_ready(&state)) {
