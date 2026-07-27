@@ -88,6 +88,17 @@ static void test_missing_permission_gates_are_specific(void) {
                "Permission required — enable Input Monitoring and Accessibility.") == 0);
 }
 
+static void test_retry_guides_next_missing_permission_without_requests(void) {
+  assert(muse_on_retry_permission_gate(false, false) ==
+         MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+  assert(muse_on_retry_permission_gate(false, true) ==
+         MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+  assert(muse_on_retry_permission_gate(true, false) ==
+         MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+  assert(muse_on_retry_permission_gate(true, true) ==
+         MUSE_ON_PERMISSION_GATE_NONE);
+}
+
 static void test_permission_guidance_selects_exact_settings_destinations(void) {
   assert(strcmp(muse_on_permission_gate_settings_url(
                    MUSE_ON_PERMISSION_GATE_INPUT_MONITORING),
@@ -160,6 +171,7 @@ int main(void) {
   test_not_permitted_keyboard_manager_error_is_permission_routed();
   test_input_monitoring_request_is_first_enable_only_and_once();
   test_missing_permission_gates_are_specific();
+  test_retry_guides_next_missing_permission_without_requests();
   test_permission_guidance_selects_exact_settings_destinations();
   test_permission_requests_require_first_enable_and_are_once_only();
   test_permission_recovery_requires_fresh_neutral_entry();

@@ -2163,6 +2163,10 @@ static void MuseOnAppConnectionSnapshot(
 
 - (void)openPermissionSettings:(NSButton *)sender {
   MuseOnPermissionGate gate = (MuseOnPermissionGate)sender.tag;
+  [self openPermissionSettingsForGate:gate];
+}
+
+- (void)openPermissionSettingsForGate:(MuseOnPermissionGate)gate {
   NSString *urlString = [NSString stringWithUTF8String:
       muse_on_permission_gate_settings_url(gate)];
   NSURL *url = [NSURL URLWithString:urlString];
@@ -2199,6 +2203,14 @@ static void MuseOnAppConnectionSnapshot(
 }
 
 - (void)retry:(id)sender {
+  [self refreshPermissionStateFromSystem];
+  MuseOnPermissionGate retryGate = muse_on_retry_permission_gate(
+      (self.missingPermissionGates & MUSE_ON_PERMISSION_GATE_INPUT_MONITORING) == 0,
+      (self.missingPermissionGates & MUSE_ON_PERMISSION_GATE_ACCESSIBILITY) == 0);
+  if (retryGate != MUSE_ON_PERMISSION_GATE_NONE) {
+    [self openPermissionSettingsForGate:retryGate];
+    return;
+  }
   if (_coordinator.disable_pending) {
     self.listenerStopPurpose = kListenerStopForDisable;
   } else if (_coordinator.safety_latched) {

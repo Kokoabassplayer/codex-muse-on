@@ -34,6 +34,8 @@ bool muse_on_input_monitoring_access_unknown(void);
 bool muse_on_request_input_monitoring_access(void);
 MuseOnPermissionGate muse_on_missing_permission_gates(
     bool input_monitoring_granted, bool accessibility_granted);
+MuseOnPermissionGate muse_on_retry_permission_gate(
+    bool input_monitoring_granted, bool accessibility_granted);
 const char *muse_on_permission_guidance(MuseOnPermissionGate gates);
 const char *muse_on_permission_gate_settings_url(MuseOnPermissionGate gate);
 const char *muse_on_permission_fallback_settings_url(void);

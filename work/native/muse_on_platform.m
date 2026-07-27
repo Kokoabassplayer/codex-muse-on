@@ -81,6 +81,17 @@ MuseOnPermissionGate muse_on_missing_permission_gates(
   return gates;
 }
 
+MuseOnPermissionGate muse_on_retry_permission_gate(
+    bool input_monitoring_granted, bool accessibility_granted) {
+  if (!input_monitoring_granted) {
+    return MUSE_ON_PERMISSION_GATE_INPUT_MONITORING;
+  }
+  if (!accessibility_granted) {
+    return MUSE_ON_PERMISSION_GATE_ACCESSIBILITY;
+  }
+  return MUSE_ON_PERMISSION_GATE_NONE;
+}
+
 const char *muse_on_permission_guidance(MuseOnPermissionGate gates) {
   if (gates == (MUSE_ON_PERMISSION_GATE_INPUT_MONITORING |
                 MUSE_ON_PERMISSION_GATE_ACCESSIBILITY)) {
