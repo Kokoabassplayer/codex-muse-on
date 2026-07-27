@@ -1076,7 +1076,9 @@ static void MuseOnAppConnectionSnapshot(
     if (accessibility) self.permissionGranted &= accessibility.boolValue;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"ready"]) {
-    muse_on_diagnostics_reset_listener(&_diagnostics);
+    /* Ready confirms listener setup; it does not prove that an earlier
+     * startup error or safety latch was recovered. Retain that tuple until
+     * a new attempt begins or recovery is explicitly verified. */
     NSString *inputMonitoring = event[@"inputMonitoring"];
     NSNumber *accessibility = event[@"accessibility"];
     if (inputMonitoring && accessibility) {
