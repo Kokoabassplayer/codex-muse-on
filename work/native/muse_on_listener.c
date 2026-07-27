@@ -88,6 +88,7 @@ struct ListenerState {
   bool recoveryStateEmitted;
   bool recoveryErrorObserved;
   bool topologyInitialSettled;
+  bool topologyClassificationFailed;
   MuseOnRecoveryPolicy recoveryPolicy;
   uint64_t filterRetryAfterNs;
   uint64_t permissionCheckAfterNs;
@@ -155,6 +156,7 @@ static void emit_topology_snapshot(MuseOnConnectionSnapshot snapshot) {
 }
 
 static void emit_current_topology(const ListenerState *state);
+static void fail_topology_classification(ListenerState *state);
 
 static const char *interface_name(InterfaceKind kind) {
   switch (kind) {
@@ -221,6 +223,16 @@ static void emit_error(ListenerState *state, const char *operation,
          operation, (int)code);
 }
 
+static void fail_topology_classification(ListenerState *state) {
+  if (!state || state->topologyClassificationFailed) return;
+  state->topologyClassificationFailed = true;
+  emit_error(state, "classify_topology", kIOReturnNoMemory);
+  emit_topology_snapshot(
+      (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
+  emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  stopRequested = 1;
+}
+
 static void emit_capture_state(const ListenerState *state, const char *event,
                                const char *reason) {
   printf("{\"event\":\"%s\",\"reason\":\"%s\","
@@ -267,17 +279,14 @@ static DeviceSlot *find_slot(ListenerState *state, IOHIDDeviceRef device) {
   return NULL;
 }
 
-static MuseOnConnectionSnapshot current_connection_snapshot(
-    const ListenerState *state) {
+static bool current_connection_snapshot(
+    const ListenerState *state, MuseOnConnectionSnapshot *snapshot) {
   const DeviceSlot *slot;
   MuseOnObservedInterface *interfaces;
   size_t count = 0;
   size_t index = 0;
-  MuseOnConnectionSnapshot snapshot;
 
-  if (!state) {
-    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0};
-  }
+  if (!state || !snapshot) return false;
   for (slot = state->slots; slot; slot = slot->next) {
     if (!slot->removed && (slot->kind == kInterfaceKeyboard ||
                            slot->kind == kInterfaceJoystick)) {
@@ -285,12 +294,11 @@ static MuseOnConnectionSnapshot current_connection_snapshot(
     }
   }
   if (count == 0) {
-    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+    *snapshot = (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_DISCONNECTED, 0};
+    return true;
   }
   interfaces = calloc(count, sizeof(*interfaces));
-  if (!interfaces) {
-    return (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0};
-  }
+  if (!interfaces) return false;
   for (slot = state->slots; slot; slot = slot->next) {
     if (slot->removed) continue;
     if (slot->kind == kInterfaceKeyboard) {
@@ -301,14 +309,20 @@ static MuseOnConnectionSnapshot current_connection_snapshot(
           MUSE_ON_OBSERVED_JOYSTICK, slot->locationID, true};
     }
   }
-  snapshot = muse_on_classify_connections(interfaces, index);
+  *snapshot = muse_on_classify_connections(interfaces, index);
   free(interfaces);
-  return snapshot;
+  return true;
 }
 
 static void emit_current_topology(const ListenerState *state) {
+  MuseOnConnectionSnapshot snapshot;
+
   if (!state || !state->topologyInitialSettled) return;
-  emit_topology_snapshot(current_connection_snapshot(state));
+  if (!current_connection_snapshot(state, &snapshot)) {
+    fail_topology_classification((ListenerState *)state);
+    return;
+  }
+  emit_topology_snapshot(snapshot);
 }
 
 static bool active_slot_at_location(const ListenerState *state,
@@ -328,8 +342,12 @@ static bool active_slot_at_location(const ListenerState *state,
 
 static bool validated_controller_location(const ListenerState *state,
                                           uint32_t *locationID) {
-  MuseOnConnectionSnapshot snapshot = current_connection_snapshot(state);
+  MuseOnConnectionSnapshot snapshot;
 
+  if (!current_connection_snapshot(state, &snapshot)) {
+    fail_topology_classification((ListenerState *)state);
+    return false;
+  }
   if (!locationID || snapshot.state != MUSE_ON_CONNECTION_SINGLE) return false;
   *locationID = snapshot.location_id;
   return true;
@@ -360,7 +378,10 @@ static void emit_recovery_state(ListenerState *state) {
   MuseOnRecoveryObservation observation;
 
   if (!state || state->recoveryStateEmitted) return;
-  topology = current_connection_snapshot(state);
+  if (!current_connection_snapshot(state, &topology)) {
+    fail_topology_classification(state);
+    return;
+  }
   controllerConnected = topology.state == MUSE_ON_CONNECTION_SINGLE &&
                         validated_controller_location(state, &controllerLocation);
   inputsReleased = controllerConnected && all_inputs_released(state);

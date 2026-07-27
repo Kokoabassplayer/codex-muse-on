@@ -911,7 +911,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) BOOL listenerEverStarted;
 @property(nonatomic) BOOL listenerCleanupKnown;
 @property(nonatomic) uint64_t listenerTaskGeneration;
-@property(nonatomic) MuseOnTopologyAuthority topologyAuthority;
+@property(nonatomic) MuseOnTopologyHostState topologyHostState;
 @property(nonatomic) BOOL primaryInstance;
 @property(nonatomic) MuseOnDiagnostics diagnostics;
 @property(nonatomic) MuseOnSetupState setup;
@@ -934,6 +934,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
                                   snapshot:(MuseOnConnectionSnapshot *)snapshot;
 - (void)recordListenerProtocolFailure;
+- (void)syncTopologyHostState;
 - (void)updatePermissionStateFromEvent:(NSDictionary *)event;
 @end
 
@@ -1008,7 +1009,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   muse_on_setup_state_init(&_setup, [defaults boolForKey:kEnabledIntentKey],
                           [defaults boolForKey:kStartAutomaticallyKey]);
   muse_on_state_init(&_coordinator);
-  muse_on_topology_init(&_topologyAuthority);
+  muse_on_topology_host_init(&_topologyHostState);
   muse_on_diagnostics_init(&_diagnostics);
   _sessionAvailable = muse_on_session_is_available();
   self.missingPermissionGates =
@@ -1136,6 +1137,14 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   muse_on_diagnostics_record_error(&_diagnostics, error);
 }
 
+- (void)syncTopologyHostState {
+  self.controllerConnected = _topologyHostState.controller_connected;
+  self.multipleControllers = _topologyHostState.multiple_controllers;
+  self.controllerLocationID = _topologyHostState.controller_location_id;
+  self.inputsReleased = _topologyHostState.inputs_released;
+  self.filterVerified = _topologyHostState.filter_verified;
+}
+
 - (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
                                   snapshot:(MuseOnConnectionSnapshot *)snapshot {
   NSString *stateName = event[@"state"];
@@ -1165,32 +1174,16 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 }
 
 - (void)applyListenerTopologySnapshot:(MuseOnConnectionSnapshot)snapshot {
-  BOOL nextControllerConnected;
-  BOOL nextMultipleControllers;
-  BOOL topologyChanged;
-  BOOL preserveRecoveryTopology =
-      snapshot.state == MUSE_ON_CONNECTION_UNKNOWN &&
-      self.listenerRecoveryMode && self.listenerRecoveryValidated &&
-      (self.listenerStopPurpose == kListenerStopForRetry ||
-       self.listenerStopPurpose == kListenerStopForDisable);
+  MuseOnTopologyEventResult result;
 
-  if (!muse_on_topology_apply(&_topologyAuthority, self.listenerTaskGeneration,
-                              snapshot)) {
+  result = muse_on_topology_host_apply_topology(
+      &_topologyHostState, self.listenerTaskGeneration, snapshot);
+  if (result == MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID) {
     [self recordListenerProtocolFailure];
     return;
   }
-  if (preserveRecoveryTopology) return;
-  nextControllerConnected = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
-  nextMultipleControllers = snapshot.state == MUSE_ON_CONNECTION_MULTIPLE;
-  topologyChanged = self.controllerConnected != nextControllerConnected ||
-                    self.multipleControllers != nextMultipleControllers ||
-                    self.controllerLocationID != snapshot.location_id;
-  self.controllerConnected = nextControllerConnected;
-  self.multipleControllers = nextMultipleControllers;
-  self.controllerLocationID = snapshot.location_id;
-  if (topologyChanged || snapshot.state == MUSE_ON_CONNECTION_UNKNOWN) {
-    self.inputsReleased = NO;
-  }
+  if (result == MUSE_ON_TOPOLOGY_EVENT_IGNORED_STALE) return;
+  [self syncTopologyHostState];
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   if (self.popover.shown) [self refreshMenu];
 }
@@ -1212,25 +1205,14 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 }
 
 - (void)invalidateListenerTopologyForTask:(NSTask *)task latch:(BOOL)latch {
-  BOOL preserveRecoveryTopology;
-
   if (!task || self.listenerTask != task) return;
-  preserveRecoveryTopology =
-      self.listenerRecoveryMode && self.listenerRecoveryValidated &&
-      (self.listenerStopPurpose == kListenerStopForRetry ||
-       self.listenerStopPurpose == kListenerStopForDisable);
-  (void)muse_on_topology_invalidate(&_topologyAuthority,
-                                    self.listenerTaskGeneration);
-  if (!preserveRecoveryTopology) {
-    self.controllerConnected = NO;
-    self.multipleControllers = NO;
-    self.controllerLocationID = 0;
-    self.inputsReleased = NO;
-    self.filterVerified = NO;
-  }
+  (void)muse_on_topology_host_invalidate(
+      &_topologyHostState, self.listenerTaskGeneration, latch,
+      self.listenerSafetyFailure);
+  [self syncTopologyHostState];
   if (latch) {
     if (self.listenerSafetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
-      self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+      self.listenerSafetyFailure = _topologyHostState.safety_failure;
     }
     self.listenerSawSafetyLatch = YES;
     [self recordSafetyFailure:self.listenerSafetyFailure];
@@ -1322,7 +1304,13 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     self.filterVerified = NO;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"neutral_entry"]) {
-    self.inputsReleased = [event[@"inputsReleased"] boolValue];
+    if (!muse_on_topology_host_apply_neutral_entry(
+            &_topologyHostState, self.listenerTaskGeneration,
+            [event[@"inputsReleased"] boolValue])) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
+    [self syncTopologyHostState];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   }
 
@@ -1351,26 +1339,42 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     if (self.popover.shown) [self refreshMenu];
   } else if ([name isEqualToString:@"recovery_state"]) {
     MuseOnConnectionSnapshot recoveryTopology;
+    MuseOnRecoveryOutcome recoveryOutcomeValue;
+    MuseOnTopologyEventResult recoveryResult;
     NSString *recoveryOutcome = event[@"recoveryOutcome"];
     BOOL recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
     BOOL neutralEntryPending =
         [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
     BOOL recoveryFailed = [recoveryOutcome isEqualToString:@"failure"] ||
                           (!recoverySucceeded && !neutralEntryPending);
+    recoveryOutcomeValue = recoverySucceeded
+        ? MUSE_ON_RECOVERY_OUTCOME_SUCCESS
+        : (neutralEntryPending ? MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING
+                               : MUSE_ON_RECOVERY_OUTCOME_FAILURE);
     if (![self listenerTopologySnapshotFromEvent:event
                                            snapshot:&recoveryTopology]) {
       [self recordListenerProtocolFailure];
       return;
     }
-    [self applyListenerTopologySnapshot:recoveryTopology];
+    recoveryResult = muse_on_topology_host_apply_recovery(
+        &_topologyHostState, self.listenerTaskGeneration, recoveryTopology,
+        recoveryOutcomeValue, [event[@"inputsReleased"] boolValue],
+        [event[@"permissionGranted"] boolValue],
+        [event[@"filterVerified"] boolValue]);
+    if (recoveryResult == MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
+    if (recoveryResult == MUSE_ON_TOPOLOGY_EVENT_IGNORED_STALE) return;
+    [self syncTopologyHostState];
     /* Recovery is authoritative when its typed outcome is valid; it is not
      * compared with a second host-owned HID observation. */
-    self.listenerRecoveryValidated = (recoverySucceeded || neutralEntryPending);
-    self.listenerRecoveryFailed = recoveryFailed;
-    self.inputsReleased = [event[@"inputsReleased"] boolValue];
-    self.permissionGranted = [event[@"permissionGranted"] boolValue];
+    self.listenerRecoveryValidated = _topologyHostState.recovery_validated;
+    self.listenerRecoveryFailed = _topologyHostState.recovery_failed;
+    self.inputsReleased = _topologyHostState.inputs_released;
+    self.permissionGranted = _topologyHostState.permission_granted;
     if (self.permissionGranted) self.retryPermissionPending = NO;
-    self.filterVerified = [event[@"filterVerified"] boolValue];
+    self.filterVerified = _topologyHostState.filter_verified;
     self.codexForeground = [event[@"codexForeground"] boolValue];
     if (recoveryFailed) {
       MuseOnSafetyFailure reportedFailure = [self safetyFailureFromString:
@@ -1409,32 +1413,17 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (void)applyCoordinatorCommand:(MuseOnCommand)command
                cleanupVerified:(BOOL)cleanupVerified
                  safetyFailure:(MuseOnSafetyFailure)safetyFailure {
-  MuseOnSafetyFailure effectiveFailure = safetyFailure;
   MuseOnState previous = _coordinator;
   self.sessionAvailable = muse_on_session_is_available();
   self.codexForeground = muse_on_codex_is_frontmost();
-  if (command == MUSE_ON_COMMAND_RETRY &&
-      effectiveFailure == MUSE_ON_SAFETY_FAILURE_NONE &&
-      muse_on_recovery_filter_restoration_unverified(
-          self.listenerRecoveryValidated, cleanupVerified,
-          self.permissionGranted, self.controllerConnected,
-          self.multipleControllers, self.sessionAvailable,
-          self.codexForeground, self.inputsReleased, self.filterVerified)) {
-    effectiveFailure = MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE;
-  }
-  MuseOnPrerequisites prerequisites = {
-      .safety_latched = effectiveFailure != MUSE_ON_SAFETY_FAILURE_NONE,
-      .safety_failure = effectiveFailure,
-      .cleanup_verified = cleanupVerified,
-      .permission_granted = self.permissionGranted,
-      .controller_connected = self.controllerConnected,
-      .multiple_controllers = self.multipleControllers,
-      .session_available = self.sessionAvailable,
-      .codex_foreground = self.codexForeground,
-      .inputs_released = self.inputsReleased,
-  };
-
-  muse_on_state_apply(&_coordinator, command, prerequisites);
+  (void)muse_on_topology_host_apply_coordinator(
+      &_topologyHostState, &_coordinator, command, safetyFailure,
+      (MuseOnTopologyCoordinatorInputs){
+          .permission_granted = self.permissionGranted,
+          .session_available = self.sessionAvailable,
+          .codex_foreground = self.codexForeground,
+          .cleanup_verified = cleanupVerified,
+      });
   [self refreshStatusIcon];
   if (_coordinator.disable_pending) {
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kDisablePendingKey];
@@ -1738,10 +1727,9 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   task.arguments = arguments;
   self.listenerTaskGeneration++;
   if (self.listenerTaskGeneration == 0) self.listenerTaskGeneration = 1;
-  muse_on_topology_begin(&_topologyAuthority, self.listenerTaskGeneration);
-  self.controllerConnected = NO;
-  self.multipleControllers = NO;
-  self.controllerLocationID = 0;
+  muse_on_topology_host_begin(&_topologyHostState,
+                              self.listenerTaskGeneration, safetyLatched);
+  [self syncTopologyHostState];
   self.listenerRecoveryMode = safetyLatched;
   self.listenerRecoveryValidated = NO;
   self.listenerRecoveryFailed = NO;

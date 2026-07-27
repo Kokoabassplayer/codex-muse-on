@@ -3,162 +3,175 @@
 #include <assert.h>
 #include <string.h>
 
-#include "../muse_on_state_coordinator.h"
-
 static MuseOnConnectionSnapshot snapshot(MuseOnConnectionState state,
                                           uint32_t location_id) {
   return (MuseOnConnectionSnapshot){state, location_id};
 }
 
-static void apply_topology_to_state(MuseOnState *state,
-                                    MuseOnConnectionSnapshot topology,
-                                    MuseOnCommand command) {
-  MuseOnPrerequisites prerequisites = {
+static MuseOnTopologyCoordinatorInputs normal_gates(void) {
+  return (MuseOnTopologyCoordinatorInputs){
+      .permission_granted = true,
+      .session_available = true,
+      .codex_foreground = true,
       .cleanup_verified = true,
-      .permission_granted = true,
-      .controller_connected = topology.state == MUSE_ON_CONNECTION_SINGLE,
-      .multiple_controllers = topology.state == MUSE_ON_CONNECTION_MULTIPLE,
-      .session_available = true,
-      .codex_foreground = true,
-      .inputs_released = true,
   };
-
-  muse_on_state_apply(state, command, prerequisites);
 }
 
-static void test_authoritative_stream_and_coordinator_source(void) {
-  MuseOnTopologyAuthority authority;
-  MuseOnState state;
-
-  muse_on_topology_init(&authority);
-  muse_on_topology_begin(&authority, 1);
-  assert(authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
-
-  assert(muse_on_topology_apply(
-      &authority, 1,
-      snapshot(MUSE_ON_CONNECTION_DISCONNECTED, 0)));
-  assert(authority.snapshot.state == MUSE_ON_CONNECTION_DISCONNECTED);
-
-  assert(muse_on_topology_apply(
-      &authority, 1,
-      snapshot(MUSE_ON_CONNECTION_SINGLE, 0x110000)));
-  assert(authority.snapshot.location_id == 0x110000);
-
-  assert(muse_on_topology_apply(
-      &authority, 1,
-      snapshot(MUSE_ON_CONNECTION_MULTIPLE, 0)));
-  assert(authority.snapshot.state == MUSE_ON_CONNECTION_MULTIPLE);
-
-  assert(muse_on_topology_apply(
-      &authority, 1,
-      snapshot(MUSE_ON_CONNECTION_DISCONNECTED, 0)));
-  assert(muse_on_topology_apply(
-      &authority, 1,
-      snapshot(MUSE_ON_CONNECTION_SINGLE, 0x220000)));
-  assert(authority.snapshot.location_id == 0x220000);
-
-  muse_on_state_init(&state);
-  apply_topology_to_state(&state, authority.snapshot, MUSE_ON_COMMAND_ENABLE);
-  assert(state.status == MUSE_ON_STATUS_ACTIVE);
-  assert(state.effects.request_dispatch);
+static void apply_coordinator(MuseOnTopologyHostState *host,
+                              MuseOnState *coordinator,
+                              MuseOnCommand command,
+                              MuseOnSafetyFailure failure) {
+  (void)muse_on_topology_host_apply_coordinator(
+      host, coordinator, command, failure, normal_gates());
 }
 
-static void test_recovery_single_neutral_pending_clears_latch_without_equality(void) {
-  MuseOnTopologyAuthority authority;
-  MuseOnState state;
+static void test_host_event_stream_drives_reader_state(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
 
-  muse_on_topology_init(&authority);
-  muse_on_topology_begin(&authority, 7);
-  assert(muse_on_topology_apply(
-      &authority, 7,
-      snapshot(MUSE_ON_CONNECTION_SINGLE, 0x330000)));
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 1, false);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(host.authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_DISCONNECTED);
+  assert(!coordinator.effects.request_dispatch);
 
-  muse_on_state_init(&state);
-  apply_topology_to_state(&state, authority.snapshot, MUSE_ON_COMMAND_ENABLE);
-  state.safety_latched = true;
-  state.safety_failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
-  state.status = MUSE_ON_STATUS_SAFETY_LATCH;
-  apply_topology_to_state(&state, authority.snapshot, MUSE_ON_COMMAND_RETRY);
-  assert(!state.safety_latched);
-  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 1, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x110000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(host.controller_connected);
+  assert(host.controller_location_id == 0x110000);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(!coordinator.effects.request_dispatch);
 
-  /* The helper's typed neutral-entry-pending outcome is still fail-closed. */
-  MuseOnPrerequisites pending = {
-      .permission_granted = true,
-      .controller_connected = true,
-      .session_available = true,
-      .codex_foreground = true,
-      .inputs_released = false,
-  };
-  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, pending);
-  assert(state.status == MUSE_ON_STATUS_INACTIVE);
-  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 1, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(coordinator.effects.request_dispatch);
+
+  assert(muse_on_topology_host_apply_topology(
+             &host, 1, snapshot(MUSE_ON_CONNECTION_MULTIPLE, 0)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_MULTIPLE);
+  assert(!coordinator.effects.request_dispatch);
+
+  assert(muse_on_topology_host_apply_topology(
+             &host, 1, snapshot(MUSE_ON_CONNECTION_DISCONNECTED, 0)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_DISCONNECTED);
 }
 
-static void test_removal_and_multiple_block_dispatch(void) {
-  MuseOnState state;
+static void test_stale_generation_and_unexpected_exit_fail_closed(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
 
-  muse_on_state_init(&state);
-  apply_topology_to_state(
-      &state, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x440000),
-      MUSE_ON_COMMAND_ENABLE);
-  assert(state.effects.request_dispatch);
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 2, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 2, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x220000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  muse_on_topology_host_begin(&host, 3, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 2, snapshot(MUSE_ON_CONNECTION_MULTIPLE, 0)) ==
+         MUSE_ON_TOPOLOGY_EVENT_IGNORED_STALE);
+  assert(host.authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
+  assert(!host.multiple_controllers);
 
-  apply_topology_to_state(
-      &state, snapshot(MUSE_ON_CONNECTION_DISCONNECTED, 0),
-      MUSE_ON_COMMAND_NONE);
-  assert(state.status == MUSE_ON_STATUS_INACTIVE);
-  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_DISCONNECTED);
-  assert(!state.effects.request_dispatch);
-  assert(state.effects.request_cleanup == false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 3, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x330000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 3, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
 
-  apply_topology_to_state(
-      &state, snapshot(MUSE_ON_CONNECTION_MULTIPLE, 0), MUSE_ON_COMMAND_NONE);
-  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_MULTIPLE);
-  assert(!state.effects.request_dispatch);
+  assert(muse_on_topology_host_invalidate(
+      &host, 3, true, MUSE_ON_SAFETY_FAILURE_NONE));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    host.safety_failure);
+  assert(host.authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
+  assert(!host.authority.authoritative);
+  assert(coordinator.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(coordinator.safety_failure ==
+         MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  assert(!coordinator.effects.request_dispatch);
+
+  /* A second termination observation remains invalidated and fail-closed. */
+  assert(muse_on_topology_host_invalidate(
+      &host, 3, true, MUSE_ON_SAFETY_FAILURE_NONE));
+  assert(host.authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
 }
 
-static void test_invalidation_latches_and_stale_generation_is_ignored(void) {
-  MuseOnTopologyAuthority authority;
-  MuseOnState state;
+static void test_typed_recovery_pending_requires_fresh_neutral_entry(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
 
-  muse_on_topology_init(&authority);
-  muse_on_topology_begin(&authority, 10);
-  assert(muse_on_topology_apply(
-      &authority, 10,
-      snapshot(MUSE_ON_CONNECTION_SINGLE, 0x550000)));
-  muse_on_topology_begin(&authority, 11);
-  assert(authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
-  assert(!muse_on_topology_apply(
-      &authority, 10,
-      snapshot(MUSE_ON_CONNECTION_MULTIPLE, 0)));
-  assert(authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
-  assert(muse_on_topology_invalidate(&authority, 11));
-  assert(!authority.authoritative);
-  assert(authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 4, true);
+  coordinator.enabled_intent = true;
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  assert(coordinator.status == MUSE_ON_STATUS_SAFETY_LATCH);
 
-  muse_on_state_init(&state);
-  state.enabled_intent = true;
-  muse_on_state_apply(
-      &state, MUSE_ON_COMMAND_NONE,
-      (MuseOnPrerequisites){
-          .safety_latched = true,
-          .safety_failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN,
-          .permission_granted = true,
-          .session_available = true,
-      });
-  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
-  assert(state.safety_failure == MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 4, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x440000),
+             MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING, false, true,
+             true) == MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(host.recovery_validated);
+  assert(!host.inputs_released);
+
+  /* Expected EOF/termination invalidates the authority but preserves the
+   * typed recovery observation long enough for the clean Retry transition. */
+  assert(muse_on_topology_host_invalidate(
+      &host, 4, false, MUSE_ON_SAFETY_FAILURE_NONE));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_RETRY,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(!coordinator.safety_latched);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(!coordinator.effects.request_dispatch);
+
+  /* Only the fresh neutral-entry observation can make this Active. */
+  host.inputs_released = true;
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(coordinator.effects.request_dispatch);
+}
+
+static void test_invalid_snapshot_is_rejected_not_disconnected(void) {
+  MuseOnTopologyHostState host;
+
+  muse_on_topology_host_init(&host);
+  muse_on_topology_host_begin(&host, 5, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 5, snapshot(MUSE_ON_CONNECTION_SINGLE, 0)) ==
+         MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID);
+  assert(host.authority.snapshot.state == MUSE_ON_CONNECTION_UNKNOWN);
+  assert(!host.controller_connected);
 }
 
 int main(void) {
-  test_authoritative_stream_and_coordinator_source();
-  test_recovery_single_neutral_pending_clears_latch_without_equality();
-  test_removal_and_multiple_block_dispatch();
-  test_invalidation_latches_and_stale_generation_is_ignored();
+  test_host_event_stream_drives_reader_state();
+  test_stale_generation_and_unexpected_exit_fail_closed();
+  test_typed_recovery_pending_requires_fresh_neutral_entry();
+  test_invalid_snapshot_is_rejected_not_disconnected();
   assert(strcmp(muse_on_connection_state_string(MUSE_ON_CONNECTION_UNKNOWN),
                 "unknown") == 0);
-  assert(!muse_on_connection_snapshot_is_valid(
-      snapshot(MUSE_ON_CONNECTION_SINGLE, 0)));
   return 0;
 }
