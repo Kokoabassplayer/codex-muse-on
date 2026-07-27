@@ -116,6 +116,9 @@ void muse_on_state_init(MuseOnState *state);
 void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
                          MuseOnPrerequisites prerequisites);
 
+/* Listener startup and recovery are not Neutral Entry evidence. */
+void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites);
+
 const char *muse_on_status_string(MuseOnStatus status);
 const char *muse_on_inactive_reason_string(MuseOnInactiveReason reason);
 const char *muse_on_safety_failure_string(MuseOnSafetyFailure failure);

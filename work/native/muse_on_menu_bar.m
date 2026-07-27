@@ -1164,6 +1164,10 @@ static void MuseOnAppConnectionSnapshot(
         listenerConnected == self.controllerConnected &&
         listenerMultiple == self.multipleControllers;
     self.inputsReleased = [event[@"inputsReleased"] boolValue];
+    MuseOnPrerequisites recoveryPrerequisites = {0};
+    recoveryPrerequisites.inputs_released = self.inputsReleased;
+    muse_on_neutral_entry_require(&recoveryPrerequisites);
+    self.inputsReleased = recoveryPrerequisites.inputs_released;
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
     self.filterVerified = [event[@"filterVerified"] boolValue];
     self.codexForeground = [event[@"codexForeground"] boolValue];
@@ -1429,7 +1433,10 @@ static void MuseOnAppConnectionSnapshot(
   self.listenerOutputBuffer = [NSMutableData data];
   /* Listener startup is not Neutral Entry evidence. Keep the host fail-closed
    * until every selected-profile control has reported released. */
-  self.inputsReleased = NO;
+  MuseOnPrerequisites startupPrerequisites = {0};
+  startupPrerequisites.inputs_released = self.inputsReleased;
+  muse_on_neutral_entry_require(&startupPrerequisites);
+  self.inputsReleased = startupPrerequisites.inputs_released;
   self.filterVerified = NO;
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   NSPipe *output = [NSPipe pipe];
@@ -2132,7 +2139,10 @@ static void MuseOnAppConnectionSnapshot(
   } else {
     self.permissionGranted = muse_on_input_monitoring_access_granted() &&
                              muse_on_preflight_post_event_access();
-    self.inputsReleased = NO;
+    MuseOnPrerequisites retryPrerequisites = {0};
+    retryPrerequisites.inputs_released = self.inputsReleased;
+    muse_on_neutral_entry_require(&retryPrerequisites);
+    self.inputsReleased = retryPrerequisites.inputs_released;
     [self refreshMenuWithCommand:MUSE_ON_COMMAND_RETRY];
     if (self.permissionGranted && _setup.enabled &&
         !_coordinator.safety_latched && self.listenerTask == nil) {

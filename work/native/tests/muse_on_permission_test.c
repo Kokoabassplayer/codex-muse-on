@@ -88,6 +88,8 @@ static void test_permission_recovery_requires_fresh_neutral_entry(void) {
 
   /* Permission recovery and listener startup still lack fresh Neutral Entry. */
   p.permission_granted = true;
+  muse_on_neutral_entry_require(&p);
+  assert(p.inputs_released == false);
   muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
   assert(state.status == MUSE_ON_STATUS_INACTIVE);
   assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);

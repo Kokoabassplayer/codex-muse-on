@@ -106,6 +106,11 @@ static void set_active_or_inactive(MuseOnState *state,
   state->effects.request_dispatch = false;
 }
 
+void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites) {
+  if (!prerequisites) return;
+  prerequisites->inputs_released = false;
+}
+
 void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
                          MuseOnPrerequisites prerequisites) {
   MuseOnSafetyFailure observedFailure;
