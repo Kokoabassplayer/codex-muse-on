@@ -960,7 +960,7 @@ static void MuseOnAppConnectionSnapshot(
   _sessionAvailable = muse_on_session_is_available();
   _permissionGranted = muse_on_input_monitoring_access_granted() &&
                         muse_on_preflight_post_event_access();
-  _inputsReleased = true;
+  _inputsReleased = NO;
   _filterVerified = true;
   _listenerRecoveryValidated = NO;
   _listenerEverStarted = NO;
@@ -986,6 +986,7 @@ static void MuseOnAppConnectionSnapshot(
 - (void)sessionDidChange:(NSNotification *)notification {
   (void)notification;
   self.sessionAvailable = muse_on_session_is_available();
+  self.inputsReleased = NO;
   if (!self.sessionAvailable && self.listenerTask &&
       !self.listenerRecoveryMode &&
       self.listenerStopPurpose == kListenerStopNone) {
@@ -1426,8 +1427,11 @@ static void MuseOnAppConnectionSnapshot(
   self.listenerSawSafetyLatch = NO;
   self.listenerPermissionRequired = NO;
   self.listenerOutputBuffer = [NSMutableData data];
-  self.inputsReleased = true;
+  /* Listener startup is not Neutral Entry evidence. Keep the host fail-closed
+   * until every selected-profile control has reported released. */
+  self.inputsReleased = NO;
   self.filterVerified = NO;
+  [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   NSPipe *output = [NSPipe pipe];
   task.standardOutput = output;
   __weak MuseOnAppDelegate *weakSelf = self;
@@ -1507,8 +1511,13 @@ static void MuseOnAppConnectionSnapshot(
 }
 
 - (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot {
-  self.controllerConnected = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
-  self.multipleControllers = snapshot.state == MUSE_ON_CONNECTION_MULTIPLE;
+  BOOL nextControllerConnected = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
+  BOOL nextMultipleControllers = snapshot.state == MUSE_ON_CONNECTION_MULTIPLE;
+  BOOL topologyChanged = self.controllerConnected != nextControllerConnected ||
+                         self.multipleControllers != nextMultipleControllers;
+  self.controllerConnected = nextControllerConnected;
+  self.multipleControllers = nextMultipleControllers;
+  if (topologyChanged) self.inputsReleased = NO;
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   if (self.popover.shown) [self refreshMenu];
 }
@@ -2063,6 +2072,8 @@ static void MuseOnAppConnectionSnapshot(
   [[NSUserDefaults standardUserDefaults] setObject:
       (_profile == MUSE_ON_PROFILE_PEDAL ? @"pedal" : @"controller-only")
                                          forKey:kControlProfileKey];
+  self.inputsReleased = NO;
+  [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   if (self.listenerTask) {
     self.listenerStopPurpose = kListenerStopForProfile;
     [self.listenerTask terminate];
@@ -2119,10 +2130,9 @@ static void MuseOnAppConnectionSnapshot(
   } else if (_coordinator.safety_latched) {
     self.listenerStopPurpose = kListenerStopForRetry;
   } else {
-    BOOL hadPermission = self.permissionGranted;
     self.permissionGranted = muse_on_input_monitoring_access_granted() &&
                              muse_on_preflight_post_event_access();
-    if (!hadPermission && self.permissionGranted) self.inputsReleased = NO;
+    self.inputsReleased = NO;
     [self refreshMenuWithCommand:MUSE_ON_COMMAND_RETRY];
     if (self.permissionGranted && _setup.enabled &&
         !_coordinator.safety_latched && self.listenerTask == nil) {
