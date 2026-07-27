@@ -66,10 +66,69 @@ bool muse_on_request_input_monitoring_access(void) {
   return IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
 }
 
+MuseOnPermissionGate muse_on_missing_permission_gates(
+    bool input_monitoring_granted, bool accessibility_granted) {
+  MuseOnPermissionGate gates = MUSE_ON_PERMISSION_GATE_NONE;
+
+  if (!input_monitoring_granted) {
+    gates = (MuseOnPermissionGate)(gates |
+                                   MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+  }
+  if (!accessibility_granted) {
+    gates = (MuseOnPermissionGate)(gates |
+                                   MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+  }
+  return gates;
+}
+
+const char *muse_on_permission_guidance(MuseOnPermissionGate gates) {
+  if (gates == (MUSE_ON_PERMISSION_GATE_INPUT_MONITORING |
+                MUSE_ON_PERMISSION_GATE_ACCESSIBILITY)) {
+    return "Permission required — enable Input Monitoring and Accessibility.";
+  }
+  switch (gates) {
+    case MUSE_ON_PERMISSION_GATE_INPUT_MONITORING:
+      return "Permission required — enable Input Monitoring.";
+    case MUSE_ON_PERMISSION_GATE_ACCESSIBILITY:
+      return "Permission required — enable Accessibility.";
+    case MUSE_ON_PERMISSION_GATE_NONE:
+      return "Permission status is current.";
+  }
+  return "Permission required — check Privacy & Security.";
+}
+
+const char *muse_on_permission_gate_settings_url(MuseOnPermissionGate gate) {
+  switch (gate) {
+    case MUSE_ON_PERMISSION_GATE_INPUT_MONITORING:
+      return "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
+    case MUSE_ON_PERMISSION_GATE_ACCESSIBILITY:
+      return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+    case MUSE_ON_PERMISSION_GATE_NONE:
+      return muse_on_permission_fallback_settings_url();
+  }
+  return muse_on_permission_fallback_settings_url();
+}
+
+const char *muse_on_permission_fallback_settings_url(void) {
+  return "x-apple.systempreferences:com.apple.preference.security";
+}
+
+bool muse_on_should_request_permission(MuseOnPermissionGate gate,
+                                       bool first_enable,
+                                       bool access_requires_request,
+                                       bool request_already_attempted) {
+  return (gate == MUSE_ON_PERMISSION_GATE_INPUT_MONITORING ||
+          gate == MUSE_ON_PERMISSION_GATE_ACCESSIBILITY) &&
+         first_enable && access_requires_request &&
+         !request_already_attempted;
+}
+
 bool muse_on_should_request_input_monitoring(bool first_enable,
                                              bool access_unknown,
                                              bool request_already_attempted) {
-  return first_enable && access_unknown && !request_already_attempted;
+  return muse_on_should_request_permission(
+      MUSE_ON_PERMISSION_GATE_INPUT_MONITORING, first_enable, access_unknown,
+      request_already_attempted);
 }
 
 bool muse_on_listener_error_is_permission_required(const char *operation,

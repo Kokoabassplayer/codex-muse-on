@@ -18,6 +18,12 @@ typedef struct {
   uint64_t flags;
 } MuseOnHyperKeyEvent;
 
+typedef enum {
+  MUSE_ON_PERMISSION_GATE_NONE = 0,
+  MUSE_ON_PERMISSION_GATE_INPUT_MONITORING = 1 << 0,
+  MUSE_ON_PERMISSION_GATE_ACCESSIBILITY = 1 << 1
+} MuseOnPermissionGate;
+
 bool muse_on_bundle_id_is_codex(const char *bundle_id);
 bool muse_on_codex_is_frontmost(void);
 bool muse_on_session_is_available(void);
@@ -26,6 +32,15 @@ bool muse_on_request_post_event_access(void);
 bool muse_on_input_monitoring_access_granted(void);
 bool muse_on_input_monitoring_access_unknown(void);
 bool muse_on_request_input_monitoring_access(void);
+MuseOnPermissionGate muse_on_missing_permission_gates(
+    bool input_monitoring_granted, bool accessibility_granted);
+const char *muse_on_permission_guidance(MuseOnPermissionGate gates);
+const char *muse_on_permission_gate_settings_url(MuseOnPermissionGate gate);
+const char *muse_on_permission_fallback_settings_url(void);
+bool muse_on_should_request_permission(MuseOnPermissionGate gate,
+                                       bool first_enable,
+                                       bool access_requires_request,
+                                       bool request_already_attempted);
 bool muse_on_should_request_input_monitoring(bool first_enable,
                                              bool access_unknown,
                                              bool request_already_attempted);

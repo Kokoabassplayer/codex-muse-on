@@ -895,6 +895,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) BOOL listenerSawStopped;
 @property(nonatomic) BOOL listenerSawSafetyLatch;
 @property(nonatomic) BOOL listenerPermissionRequired;
+@property(nonatomic) MuseOnPermissionGate missingPermissionGates;
 @property(nonatomic) MuseOnSafetyFailure listenerSafetyFailure;
 @property(nonatomic) ListenerStopPurpose listenerStopPurpose;
 @property(nonatomic) BOOL quitInFlight;
@@ -921,6 +922,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (void)applyConnectionSnapshot:(MuseOnConnectionSnapshot)snapshot;
 - (void)startConnectionObserver;
 - (void)stopConnectionObserver;
+- (void)refreshPermissionStateFromSystem;
+- (void)updatePermissionStateFromEvent:(NSDictionary *)event;
 @end
 
 static void MuseOnAppConnectionSnapshot(
@@ -930,6 +933,51 @@ static void MuseOnAppConnectionSnapshot(
 }
 
 @implementation MuseOnAppDelegate
+
+- (void)refreshPermissionStateFromSystem {
+  self.missingPermissionGates = muse_on_missing_permission_gates(
+      muse_on_input_monitoring_access_granted(),
+      muse_on_preflight_post_event_access());
+  self.permissionGranted =
+      self.missingPermissionGates == MUSE_ON_PERMISSION_GATE_NONE;
+}
+
+- (void)updatePermissionStateFromEvent:(NSDictionary *)event {
+  MuseOnPermissionGate gates = self.missingPermissionGates;
+  NSString *inputMonitoring = event[@"inputMonitoring"];
+  NSNumber *accessibility = event[@"accessibility"];
+  NSString *gateName = event[@"gate"];
+
+  if ([inputMonitoring isKindOfClass:[NSString class]]) {
+    if ([inputMonitoring isEqualToString:@"granted"]) {
+      gates = (MuseOnPermissionGate)(gates &
+                                    ~MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+    } else {
+      gates = (MuseOnPermissionGate)(gates |
+                                     MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+    }
+  }
+  if ([accessibility isKindOfClass:[NSNumber class]]) {
+    if (accessibility.boolValue) {
+      gates = (MuseOnPermissionGate)(gates &
+                                    ~MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+    } else {
+      gates = (MuseOnPermissionGate)(gates |
+                                     MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+    }
+  }
+  if ([gateName isKindOfClass:[NSString class]]) {
+    if ([gateName isEqualToString:@"input_monitoring"]) {
+      gates = (MuseOnPermissionGate)(gates |
+                                     MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+    } else if ([gateName isEqualToString:@"accessibility"]) {
+      gates = (MuseOnPermissionGate)(gates |
+                                     MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+    }
+  }
+  self.missingPermissionGates = gates;
+  self.permissionGranted = gates == MUSE_ON_PERMISSION_GATE_NONE;
+}
 
 - (BOOL)acquirePrimaryInstanceLock {
   NSFileManager *manager = [NSFileManager defaultManager];
@@ -958,8 +1006,7 @@ static void MuseOnAppConnectionSnapshot(
   muse_on_state_init(&_coordinator);
   muse_on_diagnostics_init(&_diagnostics);
   _sessionAvailable = muse_on_session_is_available();
-  _permissionGranted = muse_on_input_monitoring_access_granted() &&
-                        muse_on_preflight_post_event_access();
+  [self refreshPermissionStateFromSystem];
   _inputsReleased = NO;
   _filterVerified = true;
   _listenerRecoveryValidated = NO;
@@ -1029,7 +1076,7 @@ static void MuseOnAppConnectionSnapshot(
   int64_t code = codeValue ? codeValue.longLongValue : 0;
 
   if (muse_on_listener_error_is_permission_required(raw, (int32_t)code)) {
-    self.permissionGranted = NO;
+    [self refreshPermissionStateFromSystem];
     self.listenerPermissionRequired = YES;
     [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
                  cleanupVerified:YES
@@ -1081,7 +1128,7 @@ static void MuseOnAppConnectionSnapshot(
 
   if ([name isEqualToString:@"permission_required"]) {
     self.listenerPermissionRequired = YES;
-    self.permissionGranted = NO;
+    [self updatePermissionStateFromEvent:event];
     self.inputsReleased = NO;
     if (!_coordinator.safety_latched) {
       self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_NONE;
@@ -1094,11 +1141,9 @@ static void MuseOnAppConnectionSnapshot(
              [name isEqualToString:@"permissions_changed"]) {
     NSString *inputMonitoring = event[@"inputMonitoring"];
     NSNumber *accessibility = event[@"accessibility"];
-    if (inputMonitoring) {
-      self.permissionGranted =
-          [inputMonitoring isEqualToString:@"granted"];
+    if (inputMonitoring || accessibility) {
+      [self updatePermissionStateFromEvent:event];
     }
-    if (accessibility) self.permissionGranted &= accessibility.boolValue;
     if (!self.permissionGranted) self.inputsReleased = NO;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"ready"]) {
@@ -1108,9 +1153,7 @@ static void MuseOnAppConnectionSnapshot(
     NSString *inputMonitoring = event[@"inputMonitoring"];
     NSNumber *accessibility = event[@"accessibility"];
     if (inputMonitoring && accessibility) {
-      self.permissionGranted =
-          [inputMonitoring isEqualToString:@"granted"] &&
-          accessibility.boolValue;
+      [self updatePermissionStateFromEvent:event];
     }
     if (event[@"keyFilterApplied"]) {
       self.filterVerified = [event[@"keyFilterApplied"] boolValue];
@@ -1169,6 +1212,7 @@ static void MuseOnAppConnectionSnapshot(
     muse_on_neutral_entry_require(&recoveryPrerequisites);
     self.inputsReleased = recoveryPrerequisites.inputs_released;
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
+    if (!self.permissionGranted) [self refreshPermissionStateFromSystem];
     self.filterVerified = [event[@"filterVerified"] boolValue];
     self.codexForeground = [event[@"codexForeground"] boolValue];
     if (self.listenerRecoveryMode && self.listenerTask != nil &&
@@ -1588,7 +1632,8 @@ static void MuseOnAppConnectionSnapshot(
                                             _coordinator.safety_failure)];
     case MUSE_ON_STATUS_INACTIVE:
       if (_coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_PERMISSION) {
-        return @"Permission required — enable Input Monitoring and Accessibility in Settings.";
+        return [NSString stringWithUTF8String:muse_on_permission_guidance(
+            self.missingPermissionGates)];
       }
       return [NSString stringWithUTF8String:muse_on_inactive_reason_string(
           _coordinator.inactive_reason)];
@@ -1890,9 +1935,20 @@ static void MuseOnAppConnectionSnapshot(
     [conditionalRow addArrangedSubview:approval];
   }
   if (permissionNeedsSettings) {
-    NSButton *settings = actionButton(@"Open Settings…", @selector(openSettings:));
-    [conditionalRow addArrangedSubview:settings];
-    [focusable addObject:settings];
+    if (self.missingPermissionGates & MUSE_ON_PERMISSION_GATE_INPUT_MONITORING) {
+      NSButton *inputMonitoring = actionButton(
+          @"Open Input Monitoring", @selector(openPermissionSettings:));
+      inputMonitoring.tag = MUSE_ON_PERMISSION_GATE_INPUT_MONITORING;
+      [conditionalRow addArrangedSubview:inputMonitoring];
+      [focusable addObject:inputMonitoring];
+    }
+    if (self.missingPermissionGates & MUSE_ON_PERMISSION_GATE_ACCESSIBILITY) {
+      NSButton *accessibility = actionButton(
+          @"Open Accessibility", @selector(openPermissionSettings:));
+      accessibility.tag = MUSE_ON_PERMISSION_GATE_ACCESSIBILITY;
+      [conditionalRow addArrangedSubview:accessibility];
+      [focusable addObject:accessibility];
+    }
   }
   if (startupNeedsSettings) {
     NSButton *loginItems = actionButton(@"Open Login Items", @selector(openLoginItems:));
@@ -2013,21 +2069,24 @@ static void MuseOnAppConnectionSnapshot(
   [self saveSetup];
   if (isFirstEnable) {
     [defaults setBool:YES forKey:kFirstEnableCompletedKey];
-    if (muse_on_should_request_input_monitoring(
-            isFirstEnable, muse_on_input_monitoring_access_unknown(),
-            NO)) {
+    if (muse_on_should_request_permission(
+            MUSE_ON_PERMISSION_GATE_INPUT_MONITORING, isFirstEnable,
+            muse_on_input_monitoring_access_unknown(), NO)) {
       (void)muse_on_request_input_monitoring_access();
     }
-    if (!muse_on_preflight_post_event_access()) (void)muse_on_request_post_event_access();
+    if (muse_on_should_request_permission(
+            MUSE_ON_PERMISSION_GATE_ACCESSIBILITY, isFirstEnable,
+            !muse_on_preflight_post_event_access(), NO)) {
+      (void)muse_on_request_post_event_access();
+    }
     if (@available(macOS 10.14, *)) {
       [[UNUserNotificationCenter currentNotificationCenter]
           requestAuthorizationWithOptions:UNAuthorizationOptionAlert
                          completionHandler:^(__unused BOOL granted,
                                              __unused NSError *error) {}];
     }
-    self.permissionGranted = muse_on_input_monitoring_access_granted() &&
-                             muse_on_preflight_post_event_access();
   }
+  [self refreshPermissionStateFromSystem];
   [self applyStartupPreference];
   [self startListenerIfNeeded];
   [self refreshMenuWithCommand:MUSE_ON_COMMAND_ENABLE];
@@ -2102,9 +2161,17 @@ static void MuseOnAppConnectionSnapshot(
   [self refreshMenu];
 }
 
-- (void)openSettings:(id)sender {
-  NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security"];
-  [[NSWorkspace sharedWorkspace] openURL:url];
+- (void)openPermissionSettings:(NSButton *)sender {
+  MuseOnPermissionGate gate = (MuseOnPermissionGate)sender.tag;
+  NSString *urlString = [NSString stringWithUTF8String:
+      muse_on_permission_gate_settings_url(gate)];
+  NSURL *url = [NSURL URLWithString:urlString];
+  if (url && [[NSWorkspace sharedWorkspace] openURL:url]) return;
+
+  NSString *fallbackString = [NSString stringWithUTF8String:
+      muse_on_permission_fallback_settings_url()];
+  NSURL *fallback = [NSURL URLWithString:fallbackString];
+  if (fallback) [[NSWorkspace sharedWorkspace] openURL:fallback];
 }
 
 - (void)openLoginItems:(id)sender {
@@ -2137,8 +2204,7 @@ static void MuseOnAppConnectionSnapshot(
   } else if (_coordinator.safety_latched) {
     self.listenerStopPurpose = kListenerStopForRetry;
   } else {
-    self.permissionGranted = muse_on_input_monitoring_access_granted() &&
-                             muse_on_preflight_post_event_access();
+    [self refreshPermissionStateFromSystem];
     MuseOnPrerequisites retryPrerequisites = {0};
     retryPrerequisites.inputs_released = self.inputsReleased;
     muse_on_neutral_entry_require(&retryPrerequisites);

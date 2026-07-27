@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <IOKit/IOReturn.h>
 
@@ -64,6 +65,57 @@ static void test_input_monitoring_request_is_first_enable_only_and_once(void) {
   assert(!muse_on_should_request_input_monitoring(false, true, false));
 }
 
+static void test_missing_permission_gates_are_specific(void) {
+  assert(muse_on_missing_permission_gates(true, true) ==
+         MUSE_ON_PERMISSION_GATE_NONE);
+  assert(muse_on_missing_permission_gates(false, true) ==
+         MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+  assert(muse_on_missing_permission_gates(true, false) ==
+         MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+  assert(muse_on_missing_permission_gates(false, false) ==
+         (MUSE_ON_PERMISSION_GATE_INPUT_MONITORING |
+          MUSE_ON_PERMISSION_GATE_ACCESSIBILITY));
+
+  assert(strcmp(muse_on_permission_guidance(
+                   MUSE_ON_PERMISSION_GATE_INPUT_MONITORING),
+               "Permission required — enable Input Monitoring.") == 0);
+  assert(strcmp(muse_on_permission_guidance(
+                   MUSE_ON_PERMISSION_GATE_ACCESSIBILITY),
+               "Permission required — enable Accessibility.") == 0);
+  assert(strcmp(muse_on_permission_guidance(
+                   MUSE_ON_PERMISSION_GATE_INPUT_MONITORING |
+                   MUSE_ON_PERMISSION_GATE_ACCESSIBILITY),
+               "Permission required — enable Input Monitoring and Accessibility.") == 0);
+}
+
+static void test_permission_guidance_selects_exact_settings_destinations(void) {
+  assert(strcmp(muse_on_permission_gate_settings_url(
+                   MUSE_ON_PERMISSION_GATE_INPUT_MONITORING),
+               "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") == 0);
+  assert(strcmp(muse_on_permission_gate_settings_url(
+                   MUSE_ON_PERMISSION_GATE_ACCESSIBILITY),
+               "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") == 0);
+  assert(strcmp(muse_on_permission_gate_settings_url(
+                   MUSE_ON_PERMISSION_GATE_NONE),
+               muse_on_permission_fallback_settings_url()) == 0);
+}
+
+static void test_permission_requests_require_first_enable_and_are_once_only(void) {
+  MuseOnPermissionGate gates[] = {
+      MUSE_ON_PERMISSION_GATE_INPUT_MONITORING,
+      MUSE_ON_PERMISSION_GATE_ACCESSIBILITY,
+  };
+
+  for (size_t index = 0; index < sizeof(gates) / sizeof(gates[0]); index++) {
+    assert(muse_on_should_request_permission(gates[index], true, true, false));
+    assert(!muse_on_should_request_permission(gates[index], false, true, false));
+    assert(!muse_on_should_request_permission(gates[index], true, true, true));
+    assert(!muse_on_should_request_permission(gates[index], true, false, false));
+  }
+  assert(!muse_on_should_request_permission(MUSE_ON_PERMISSION_GATE_NONE,
+                                            true, true, false));
+}
+
 static void test_permission_recovery_requires_fresh_neutral_entry(void) {
   MuseOnState state;
   MuseOnPrerequisites p = {0};
@@ -107,6 +159,9 @@ int main(void) {
   test_generic_keyboard_manager_error_remains_safety_latch();
   test_not_permitted_keyboard_manager_error_is_permission_routed();
   test_input_monitoring_request_is_first_enable_only_and_once();
+  test_missing_permission_gates_are_specific();
+  test_permission_guidance_selects_exact_settings_destinations();
+  test_permission_requests_require_first_enable_and_are_once_only();
   test_permission_recovery_requires_fresh_neutral_entry();
   return 0;
 }
