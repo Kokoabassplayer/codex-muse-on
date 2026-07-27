@@ -1231,10 +1231,6 @@ static void MuseOnAppConnectionSnapshot(
         listenerConnected == self.controllerConnected &&
         listenerMultiple == self.multipleControllers;
     self.inputsReleased = [event[@"inputsReleased"] boolValue];
-    MuseOnPrerequisites recoveryPrerequisites = {0};
-    recoveryPrerequisites.inputs_released = self.inputsReleased;
-    muse_on_neutral_entry_require(&recoveryPrerequisites);
-    self.inputsReleased = recoveryPrerequisites.inputs_released;
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
     if (self.permissionGranted) self.retryPermissionPending = NO;
     self.filterVerified = [event[@"filterVerified"] boolValue];

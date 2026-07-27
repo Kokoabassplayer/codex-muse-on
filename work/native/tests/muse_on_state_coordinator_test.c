@@ -448,6 +448,69 @@ static void test_retry_requires_cleanup_and_every_gate(void) {
   assert(state.safety_latched == false);
 }
 
+/* Recovery proof must preserve the listener's released-input observation. */
+static void test_unclean_recovery_preserves_proof_then_requires_fresh_entry(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.effects.request_dispatch == false);
+
+  /* Recovery helper reports every prerequisite and verified stopped cleanup. */
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = true;
+  p.inputs_released = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(state.safety_latched == false);
+  assert(state.effects.request_dispatch == true);
+
+  /* Starting the normal listener requires a new Neutral Entry observation. */
+  muse_on_neutral_entry_require(&p);
+  assert(p.inputs_released == false);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(state.effects.request_dispatch == false);
+
+  p.inputs_released = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(state.effects.request_dispatch == true);
+}
+
+/* Recovery remains fail-closed when cleanup or any prerequisite is unmet. */
+static void test_unclean_recovery_rejects_failed_cleanup_and_gates(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.effects.request_dispatch == false);
+
+  p.cleanup_verified = true;
+  p.permission_granted = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.effects.request_dispatch == false);
+
+  p.permission_granted = true;
+  p.inputs_released = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.effects.request_dispatch == false);
+}
+
 /* Disable persists immediately while failed cleanup remains latched. */
 static void test_disable_pending_resolves_to_disabled_after_retry(void) {
   MuseOnState state;
@@ -648,6 +711,8 @@ int main(void) {
   test_disable_wins_over_latch();
   test_named_safety_failure_is_sticky_and_fail_closed();
   test_retry_requires_cleanup_and_every_gate();
+  test_unclean_recovery_preserves_proof_then_requires_fresh_entry();
+  test_unclean_recovery_rejects_failed_cleanup_and_gates();
   test_disable_pending_resolves_to_disabled_after_retry();
   test_unclean_prior_exit_latches_next_launch();
   test_ordinary_gates_auto_recover_without_latch();
