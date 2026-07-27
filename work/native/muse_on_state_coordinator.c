@@ -61,10 +61,11 @@ static bool cleanup_is_verified(MuseOnPrerequisites prerequisites) {
 
 static bool active_gates_except_neutral_entry_are_clear(
     MuseOnPrerequisites prerequisites) {
+  /* Foreground is an ordinary Active gate, not a safety-recovery gate. */
   return prerequisites.permission_granted &&
          !prerequisites.multiple_controllers &&
          prerequisites.controller_connected &&
-         prerequisites.session_available && prerequisites.codex_foreground;
+         prerequisites.session_available;
 }
 
 static void set_disabled(MuseOnState *state) {
@@ -155,8 +156,9 @@ MuseOnRecoveryDecision muse_on_recovery_policy_evaluate(
 
 bool muse_on_recovery_non_neutral_gates_valid(
     MuseOnRecoveryObservation observation) {
+  /* Foreground is intentionally excluded; dispatch still requires it below. */
   return observation.permission_granted && observation.controller_connected &&
-         !observation.multiple_controllers && observation.codex_foreground &&
+         !observation.multiple_controllers &&
          observation.filter_verified && observation.keyboard_open &&
          !observation.error_observed;
 }
@@ -193,9 +195,11 @@ bool muse_on_recovery_filter_restoration_unverified(
     bool controller_connected, bool multiple_controllers,
     bool session_available, bool codex_foreground, bool inputs_released,
     bool filter_verified) {
+  /* Foreground is observed by the host separately from safety proof. */
+  (void)codex_foreground;
   return recovery_validated && !cleanup_verified && permission_granted &&
          controller_connected && !multiple_controllers && session_available &&
-         codex_foreground && inputs_released && !filter_verified;
+         inputs_released && !filter_verified;
 }
 
 void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,

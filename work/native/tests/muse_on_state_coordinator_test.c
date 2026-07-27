@@ -296,6 +296,38 @@ static void test_retry_clears_safety_latch_when_prerequisites_met(void) {
   assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_NONE);
 }
 
+/* Background Retry may clear safety, but must remain Inactive and never dispatch. */
+static void test_background_retry_clears_latch_without_activation(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_latched = true;
+  p.codex_foreground = false;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_latched = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.safety_latched == false);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND);
+  assert(state.effects.request_dispatch == false);
+
+  /* Foreground return is not Neutral Entry; the host must observe a fresh release. */
+  p.codex_foreground = true;
+  p.inputs_released = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(state.effects.request_dispatch == false);
+
+  p.inputs_released = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(state.effects.request_dispatch == true);
+}
+
 static void test_retry_keeps_latch_when_prerequisites_unmet(void) {
   MuseOnState state;
   MuseOnPrerequisites p;
@@ -525,15 +557,15 @@ static void test_recovery_filter_restoration_order(void) {
 
   /* Recovery state has an active filter; no restoration failure is present. */
   assert(!muse_on_recovery_filter_restoration_unverified(
-      true, false, true, true, false, true, true, true, true));
+      true, false, true, true, false, true, false, true, true));
 
   /* filter_restored clears the active-filter observation while cleanup waits. */
   assert(muse_on_recovery_filter_restoration_unverified(
-      true, false, true, true, false, true, true, true, false));
+      true, false, true, true, false, true, false, true, false));
 
   /* stopped with clean cleanup verifies that restoration; RETRY may clear. */
   assert(!muse_on_recovery_filter_restoration_unverified(
-      true, true, true, true, false, true, true, true, false));
+      true, true, true, true, false, true, false, true, false));
   p.safety_failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
   muse_on_state_init(&state);
   muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
@@ -546,7 +578,7 @@ static void test_recovery_filter_restoration_order(void) {
 
   /* Missing filter proof plus failed cleanup remains fail-closed. */
   assert(muse_on_recovery_filter_restoration_unverified(
-      true, false, true, true, false, true, true, true, false));
+      true, false, true, true, false, true, false, true, false));
 }
 
 /* Disable persists immediately while failed cleanup remains latched. */
@@ -733,6 +765,25 @@ static void test_recovery_policy_settles_before_emitting(void) {
          MUSE_ON_RECOVERY_DONE);
 }
 
+static void test_recovery_policy_accepts_background_safety_proof(void) {
+  MuseOnRecoveryPolicy policy;
+  MuseOnRecoveryObservation observation = {
+      .permission_granted = true,
+      .controller_connected = true,
+      .multiple_controllers = false,
+      .codex_foreground = false,
+      .inputs_released = true,
+      .filter_verified = true,
+      .keyboard_open = true,
+      .error_observed = false,
+  };
+
+  muse_on_recovery_policy_init(&policy, 100);
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 10000000,
+                                          observation) ==
+         MUSE_ON_RECOVERY_SUCCESS);
+}
+
 /* A stalled recovery fails once at the bounded deadline and stays fail-closed. */
 static void test_recovery_policy_timeout_is_fail_closed(void) {
   MuseOnRecoveryPolicy policy;
@@ -853,6 +904,7 @@ int main(void) {
   test_not_foreground_priority();
   test_release_controls_is_lowest_priority();
   test_retry_clears_safety_latch_when_prerequisites_met();
+  test_background_retry_clears_latch_without_activation();
   test_retry_keeps_latch_when_prerequisites_unmet();
   test_disable_during_safety_latch();
   test_latch_persists_through_ordinary_observation();
@@ -870,6 +922,7 @@ int main(void) {
   test_disconnect_recovers_on_reconnect();
   test_retry_enters_release_controls_after_cleanup();
   test_recovery_policy_settles_before_emitting();
+  test_recovery_policy_accepts_background_safety_proof();
   test_recovery_policy_timeout_is_fail_closed();
   test_recovery_outcome_protocol_is_typed_and_truthful();
   test_status_strings();
