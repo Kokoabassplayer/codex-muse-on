@@ -1089,6 +1089,7 @@ static void MuseOnAppConnectionSnapshot(
     if (event[@"keyFilterApplied"]) {
       self.filterVerified = [event[@"keyFilterApplied"] boolValue];
     }
+    muse_on_diagnostics_record_listener_ready(&_diagnostics);
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"focus_changed"]) {
     self.codexForeground = [event[@"codexFrontmost"] boolValue];
@@ -1140,10 +1141,6 @@ static void MuseOnAppConnectionSnapshot(
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
     self.filterVerified = [event[@"filterVerified"] boolValue];
     self.codexForeground = [event[@"codexForeground"] boolValue];
-    if (self.listenerRecoveryValidated && self.permissionGranted &&
-        self.filterVerified && self.codexForeground && self.inputsReleased) {
-      muse_on_diagnostics_reset_listener(&_diagnostics);
-    }
     if (self.listenerRecoveryMode && self.listenerTask != nil &&
         (self.listenerStopPurpose == kListenerStopForRetry ||
          self.listenerStopPurpose == kListenerStopForDisable)) {
@@ -1346,6 +1343,10 @@ static void MuseOnAppConnectionSnapshot(
       break;
   }
   if (self.popover.shown) [self refreshMenu];
+  muse_on_diagnostics_clear_listener_if_recovered(
+      &_diagnostics, recoveryMode && self.listenerRecoveryValidated,
+      cleanupVerified, self.listenerTask == nil && cleanupVerified,
+      _coordinator.safety_latched, self.listenerSafetyFailure);
   if (self.listenerTask == nil) {
     self.listenerStopPurpose = kListenerStopNone;
     self.listenerRecoveryMode = NO;

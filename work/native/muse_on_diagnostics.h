@@ -64,12 +64,20 @@ void muse_on_diagnostics_reset_listener(MuseOnDiagnostics *diagnostics);
 void muse_on_diagnostics_record_listener_error(MuseOnDiagnostics *diagnostics,
                                                 const char *operation,
                                                 int64_t code);
+void muse_on_diagnostics_record_listener_ready(MuseOnDiagnostics *diagnostics);
 void muse_on_diagnostics_record_listener_termination(
     MuseOnDiagnostics *diagnostics,
     MuseOnDiagnosticTerminationReason reason,
     int64_t status,
     bool has_signal,
     int64_t signal);
+void muse_on_diagnostics_clear_listener_if_recovered(
+    MuseOnDiagnostics *diagnostics,
+    bool recovery_validated,
+    bool cleanup_verified,
+    bool termination_succeeded,
+    bool safety_latched,
+    MuseOnSafetyFailure safety_failure);
 size_t muse_on_diagnostics_count(const MuseOnDiagnostics *diagnostics);
 size_t muse_on_diagnostics_copy(const MuseOnDiagnostics *diagnostics,
                                 char *output, size_t capacity);

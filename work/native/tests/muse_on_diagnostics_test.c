@@ -88,7 +88,7 @@ static void test_listener_startup_details_preserve_known_and_unknown_errors(void
                         "code=42") != NULL);
 }
 
-static void test_pre_ready_listener_error_survives_ready_and_termination(void) {
+static void test_listener_error_survives_ready_and_failed_recovery(void) {
   MuseOnDiagnostics diagnostics;
   char output[4096];
 
@@ -96,7 +96,7 @@ static void test_pre_ready_listener_error_survives_ready_and_termination(void) {
   muse_on_diagnostics_record_listener_error(
       &diagnostics, "apply_keyboard_filter", -536870203);
 
-  /* A ready event is not proof that the earlier failure was recovered. */
+  muse_on_diagnostics_record_listener_ready(&diagnostics);
   assert(diagnostics.listener.has_error);
   assert(strcmp(diagnostics.listener.error_operation,
                 "apply_keyboard_filter") == 0);
@@ -104,13 +104,16 @@ static void test_pre_ready_listener_error_survives_ready_and_termination(void) {
 
   muse_on_diagnostics_record_listener_termination(
       &diagnostics, MUSE_ON_DIAGNOSTIC_TERMINATION_EXIT, 1, false, 0);
+  muse_on_diagnostics_clear_listener_if_recovered(
+      &diagnostics, true, false, false, true,
+      MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
   assert(muse_on_diagnostics_copy(&diagnostics, output, sizeof(output)) > 0);
   assert(strstr(output, "listener_error operation=apply_keyboard_filter "
                         "code=-536870203") != NULL);
   assert(strstr(output, "listener_termination status=1 reason=exit") != NULL);
 
-  /* Only an explicit new attempt or proved clean recovery clears the tuple. */
-  muse_on_diagnostics_reset_listener(&diagnostics);
+  muse_on_diagnostics_clear_listener_if_recovered(
+      &diagnostics, true, true, true, false, MUSE_ON_SAFETY_FAILURE_NONE);
   assert(!diagnostics.listener.has_error);
   assert(!diagnostics.listener.has_termination);
   assert(muse_on_diagnostics_copy(&diagnostics, output, sizeof(output)) == 0);
@@ -174,7 +177,7 @@ int main(void) {
   test_diagnostics_contain_only_safe_identifiers();
   test_diagnostics_copy_is_bounded_and_nul_terminated();
   test_listener_startup_details_preserve_known_and_unknown_errors();
-  test_pre_ready_listener_error_survives_ready_and_termination();
+  test_listener_error_survives_ready_and_failed_recovery();
   test_listener_details_are_bounded_and_reset_without_losing_history();
   return 0;
 }

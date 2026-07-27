@@ -90,6 +90,11 @@ void muse_on_diagnostics_record_listener_error(MuseOnDiagnostics *diagnostics,
   diagnostics->listener.error_code = clamp_int64_to_int32(code);
 }
 
+void muse_on_diagnostics_record_listener_ready(MuseOnDiagnostics *diagnostics) {
+  /* Readiness is not cleanup proof and must not clear an earlier tuple. */
+  (void)diagnostics;
+}
+
 void muse_on_diagnostics_record_listener_termination(
     MuseOnDiagnostics *diagnostics,
     MuseOnDiagnosticTerminationReason reason,
@@ -102,6 +107,21 @@ void muse_on_diagnostics_record_listener_termination(
   diagnostics->listener.termination_status = clamp_int64_to_int32(status);
   diagnostics->listener.has_termination_signal = has_signal;
   diagnostics->listener.termination_signal = clamp_int64_to_int32(signal);
+}
+
+void muse_on_diagnostics_clear_listener_if_recovered(
+    MuseOnDiagnostics *diagnostics,
+    bool recovery_validated,
+    bool cleanup_verified,
+    bool termination_succeeded,
+    bool safety_latched,
+    MuseOnSafetyFailure safety_failure) {
+  if (!diagnostics || !recovery_validated || !cleanup_verified ||
+      !termination_succeeded || safety_latched ||
+      safety_failure != MUSE_ON_SAFETY_FAILURE_NONE) {
+    return;
+  }
+  muse_on_diagnostics_reset_listener(diagnostics);
 }
 
 size_t muse_on_diagnostics_count(const MuseOnDiagnostics *diagnostics) {
