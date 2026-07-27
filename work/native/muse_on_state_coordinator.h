@@ -71,6 +71,13 @@ typedef enum {
   MUSE_ON_RECOVERY_DONE
 } MuseOnRecoveryDecision;
 
+typedef enum {
+  MUSE_ON_RECOVERY_OUTCOME_WAIT = 0,
+  MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING,
+  MUSE_ON_RECOVERY_OUTCOME_SUCCESS,
+  MUSE_ON_RECOVERY_OUTCOME_FAILURE
+} MuseOnRecoveryOutcome;
+
 typedef struct {
   bool permission_granted;
   bool controller_connected; /* exactly one paired Muse-On */
@@ -152,6 +159,11 @@ void muse_on_recovery_policy_init(MuseOnRecoveryPolicy *policy,
 MuseOnRecoveryDecision muse_on_recovery_policy_evaluate(
     MuseOnRecoveryPolicy *policy, uint64_t now_ns,
     MuseOnRecoveryObservation observation);
+bool muse_on_recovery_non_neutral_gates_valid(
+    MuseOnRecoveryObservation observation);
+MuseOnRecoveryOutcome muse_on_recovery_outcome_for(
+    MuseOnRecoveryDecision decision, MuseOnRecoveryObservation observation);
+const char *muse_on_recovery_outcome_string(MuseOnRecoveryOutcome outcome);
 
 /* A missing filter is unsafe only before clean recovery is verified. */
 bool muse_on_recovery_filter_restoration_unverified(

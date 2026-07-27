@@ -59,6 +59,14 @@ static bool cleanup_is_verified(MuseOnPrerequisites prerequisites) {
          observed_safety_failure(prerequisites) == MUSE_ON_SAFETY_FAILURE_NONE;
 }
 
+static bool active_gates_except_neutral_entry_are_clear(
+    MuseOnPrerequisites prerequisites) {
+  return prerequisites.permission_granted &&
+         !prerequisites.multiple_controllers &&
+         prerequisites.controller_connected &&
+         prerequisites.session_available && prerequisites.codex_foreground;
+}
+
 static void set_disabled(MuseOnState *state) {
   state->status = MUSE_ON_STATUS_DISABLED;
   state->inactive_reason = MUSE_ON_INACTIVE_REASON_NONE;
@@ -128,19 +136,56 @@ MuseOnRecoveryDecision muse_on_recovery_policy_evaluate(
     elapsed_ns = now_ns - policy->started_at_ns;
   }
 
-  if (observation.permission_granted &&
-      observation.controller_connected &&
-      !observation.multiple_controllers && observation.codex_foreground &&
-      observation.inputs_released && observation.filter_verified &&
-      observation.keyboard_open && !observation.error_observed) {
+  if (muse_on_recovery_non_neutral_gates_valid(observation) &&
+      observation.inputs_released) {
     policy->emitted = true;
     return MUSE_ON_RECOVERY_SUCCESS;
+  }
+  /* Neutral Entry is a user release observation, not HID settlement. */
+  if (muse_on_recovery_non_neutral_gates_valid(observation) &&
+      !observation.inputs_released) {
+    return MUSE_ON_RECOVERY_WAIT;
   }
   if (elapsed_ns >= MUSE_ON_RECOVERY_SETTLEMENT_NS) {
     policy->emitted = true;
     return MUSE_ON_RECOVERY_FAILURE;
   }
   return MUSE_ON_RECOVERY_WAIT;
+}
+
+bool muse_on_recovery_non_neutral_gates_valid(
+    MuseOnRecoveryObservation observation) {
+  return observation.permission_granted && observation.controller_connected &&
+         !observation.multiple_controllers && observation.codex_foreground &&
+         observation.filter_verified && observation.keyboard_open &&
+         !observation.error_observed;
+}
+
+MuseOnRecoveryOutcome muse_on_recovery_outcome_for(
+    MuseOnRecoveryDecision decision, MuseOnRecoveryObservation observation) {
+  if (decision == MUSE_ON_RECOVERY_SUCCESS) {
+    return MUSE_ON_RECOVERY_OUTCOME_SUCCESS;
+  }
+  if (decision == MUSE_ON_RECOVERY_FAILURE) {
+    return MUSE_ON_RECOVERY_OUTCOME_FAILURE;
+  }
+  if (decision == MUSE_ON_RECOVERY_WAIT &&
+      muse_on_recovery_non_neutral_gates_valid(observation) &&
+      !observation.inputs_released) {
+    return MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING;
+  }
+  return MUSE_ON_RECOVERY_OUTCOME_WAIT;
+}
+
+const char *muse_on_recovery_outcome_string(MuseOnRecoveryOutcome outcome) {
+  switch (outcome) {
+    case MUSE_ON_RECOVERY_OUTCOME_WAIT: return "wait";
+    case MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING:
+      return "neutral_entry_pending";
+    case MUSE_ON_RECOVERY_OUTCOME_SUCCESS: return "success";
+    case MUSE_ON_RECOVERY_OUTCOME_FAILURE: return "failure";
+  }
+  return "unknown";
 }
 
 bool muse_on_recovery_filter_restoration_unverified(
@@ -242,9 +287,8 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
     }
     state->safety_latched = true;
   } else if (state->safety_latched && command == MUSE_ON_COMMAND_RETRY &&
-             prerequisites.cleanup_verified &&
-             evaluate_inactive_reason(prerequisites) ==
-                 MUSE_ON_INACTIVE_REASON_NONE) {
+             cleanup_is_verified(prerequisites) &&
+             active_gates_except_neutral_entry_are_clear(prerequisites)) {
     state->safety_latched = false;
     state->safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
   }

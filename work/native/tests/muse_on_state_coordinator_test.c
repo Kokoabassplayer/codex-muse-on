@@ -508,8 +508,14 @@ static void test_unclean_recovery_rejects_failed_cleanup_and_gates(void) {
   p.permission_granted = true;
   p.inputs_released = false;
   muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
-  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(state.safety_latched == false);
   assert(state.effects.request_dispatch == false);
+
+  p.inputs_released = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
 }
 
 /* Clean filter restoration is proved by stopped cleanup, not filter absence. */
@@ -657,6 +663,31 @@ static void test_disconnect_recovers_on_reconnect(void) {
   assert(state.status == MUSE_ON_STATUS_ACTIVE);
 }
 
+/* Verified cleanup may clear the latch to Release controls without Neutral Entry. */
+static void test_retry_enters_release_controls_after_cleanup(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  p.cleanup_verified = true;
+  p.inputs_released = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(state.safety_latched == false);
+  assert(state.effects.request_dispatch == false);
+
+  p.inputs_released = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_ACTIVE);
+  assert(state.effects.request_dispatch == true);
+}
+
 /* Recovery waits through HID enumeration and emits exactly once. */
 static void test_recovery_policy_settles_before_emitting(void) {
   MuseOnRecoveryPolicy policy;
@@ -685,11 +716,19 @@ static void test_recovery_policy_settles_before_emitting(void) {
 
   observation.multiple_controllers = false;
   observation.filter_verified = true;
-  observation.inputs_released = true;
+  assert(muse_on_recovery_non_neutral_gates_valid(observation));
   assert(muse_on_recovery_policy_evaluate(&policy, 100 + 900000000,
                                           observation) ==
+         MUSE_ON_RECOVERY_WAIT);
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 100 + MUSE_ON_RECOVERY_SETTLEMENT_NS + 1,
+             observation) == MUSE_ON_RECOVERY_WAIT);
+
+  observation.inputs_released = true;
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 1600000000,
+                                          observation) ==
          MUSE_ON_RECOVERY_SUCCESS);
-  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 950000000,
+  assert(muse_on_recovery_policy_evaluate(&policy, 100 + 1700000000,
                                           observation) ==
          MUSE_ON_RECOVERY_DONE);
 }
@@ -709,6 +748,30 @@ static void test_recovery_policy_timeout_is_fail_closed(void) {
   assert(muse_on_recovery_policy_evaluate(
              &policy, 2000 + MUSE_ON_RECOVERY_SETTLEMENT_NS + 1, observation) ==
          MUSE_ON_RECOVERY_DONE);
+}
+
+static void test_recovery_outcome_protocol_is_typed_and_truthful(void) {
+  MuseOnRecoveryObservation observation = {
+      .permission_granted = true,
+      .controller_connected = true,
+      .multiple_controllers = false,
+      .codex_foreground = true,
+      .inputs_released = false,
+      .filter_verified = true,
+      .keyboard_open = true,
+      .error_observed = false,
+  };
+
+  assert(muse_on_recovery_outcome_for(MUSE_ON_RECOVERY_WAIT, observation) ==
+         MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING);
+  assert(muse_on_recovery_outcome_for(MUSE_ON_RECOVERY_FAILURE, observation) ==
+         MUSE_ON_RECOVERY_OUTCOME_FAILURE);
+  assert(strcmp(muse_on_recovery_outcome_string(
+                    MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING),
+                "neutral_entry_pending") == 0);
+  assert(strcmp(muse_on_recovery_outcome_string(
+                    MUSE_ON_RECOVERY_OUTCOME_FAILURE),
+                "failure") == 0);
 }
 
 /* ---- String helpers ---- */
@@ -805,8 +868,10 @@ int main(void) {
   test_ordinary_gates_auto_recover_without_latch();
   test_safe_quit_requires_verified_cleanup();
   test_disconnect_recovers_on_reconnect();
+  test_retry_enters_release_controls_after_cleanup();
   test_recovery_policy_settles_before_emitting();
   test_recovery_policy_timeout_is_fail_closed();
+  test_recovery_outcome_protocol_is_typed_and_truthful();
   test_status_strings();
   test_inactive_reason_strings();
   test_safety_failure_strings();

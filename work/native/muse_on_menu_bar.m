@@ -891,6 +891,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 @property(nonatomic) BOOL codexForeground;
 @property(nonatomic) BOOL listenerRecoveryMode;
 @property(nonatomic) BOOL listenerRecoveryValidated;
+@property(nonatomic) BOOL listenerRecoveryFailed;
 @property(nonatomic) BOOL listenerCleanupVerified;
 @property(nonatomic) BOOL listenerSawStopped;
 @property(nonatomic) BOOL listenerSawSafetyLatch;
@@ -1225,16 +1226,41 @@ static void MuseOnAppConnectionSnapshot(
   } else if ([name isEqualToString:@"recovery_state"]) {
     BOOL listenerConnected = [event[@"controllerConnected"] boolValue];
     BOOL listenerMultiple = [event[@"multipleControllers"] boolValue];
+    NSString *recoveryOutcome = event[@"recoveryOutcome"];
+    BOOL recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
+    BOOL neutralEntryPending =
+        [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
+    BOOL recoveryFailed = [recoveryOutcome isEqualToString:@"failure"] ||
+                          (!recoverySucceeded && !neutralEntryPending);
     /* The listener may validate ownership, but never becomes the host's
      * connection source. A disagreement keeps Retry fail-closed. */
     self.listenerRecoveryValidated =
+        (recoverySucceeded || neutralEntryPending) &&
         listenerConnected == self.controllerConnected &&
         listenerMultiple == self.multipleControllers;
+    self.listenerRecoveryFailed = recoveryFailed;
     self.inputsReleased = [event[@"inputsReleased"] boolValue];
     self.permissionGranted = [event[@"permissionGranted"] boolValue];
     if (self.permissionGranted) self.retryPermissionPending = NO;
     self.filterVerified = [event[@"filterVerified"] boolValue];
     self.codexForeground = [event[@"codexForeground"] boolValue];
+    if (recoveryFailed) {
+      MuseOnSafetyFailure reportedFailure = [self safetyFailureFromString:
+          event[@"recoveryFailure"]];
+      self.listenerRecoveryValidated = NO;
+      self.listenerSawSafetyLatch = YES;
+      if (self.listenerSafetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
+        self.listenerSafetyFailure = reportedFailure;
+      }
+      [self recordSafetyFailure:self.listenerSafetyFailure];
+      [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
+                   cleanupVerified:NO
+                     safetyFailure:self.listenerSafetyFailure];
+    } else if (neutralEntryPending) {
+      /* Verified cleanup after this event transitions the host to
+       * Inactive — Release controls; the normal listener observes the fresh
+       * release without another Retry. */
+    }
     if (self.listenerRecoveryMode && self.listenerTask != nil &&
         (self.listenerStopPurpose == kListenerStopForRetry ||
          self.listenerStopPurpose == kListenerStopForDisable)) {
@@ -1332,7 +1358,7 @@ static void MuseOnAppConnectionSnapshot(
   MuseOnSafetyFailure failure = self.listenerSafetyFailure;
 
   if (purpose == kListenerStopForRetry && recoveryMode &&
-      !self.listenerRecoveryValidated) {
+      (self.listenerRecoveryFailed || !self.listenerRecoveryValidated)) {
     cleanupVerified = NO;
   }
   if (!cleanupVerified && failure == MUSE_ON_SAFETY_FAILURE_NONE) {
@@ -1462,6 +1488,7 @@ static void MuseOnAppConnectionSnapshot(
     self.listenerStopPurpose = kListenerStopNone;
     self.listenerRecoveryMode = NO;
     self.listenerRecoveryValidated = NO;
+    self.listenerRecoveryFailed = NO;
     self.listenerPermissionRequired = NO;
   } else if (!self.listenerRecoveryMode) {
     self.listenerStopPurpose = kListenerStopNone;
@@ -1501,6 +1528,7 @@ static void MuseOnAppConnectionSnapshot(
   task.arguments = arguments;
   self.listenerRecoveryMode = safetyLatched;
   self.listenerRecoveryValidated = NO;
+  self.listenerRecoveryFailed = NO;
   self.listenerCleanupVerified = NO;
   self.listenerSawStopped = NO;
   self.listenerSawSafetyLatch = NO;

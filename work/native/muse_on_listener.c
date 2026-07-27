@@ -347,6 +347,7 @@ static void emit_recovery_state(ListenerState *state) {
   bool filterVerified;
   bool inputsReleased;
   MuseOnRecoveryDecision decision;
+  MuseOnRecoveryOutcome outcome;
   MuseOnRecoveryObservation observation;
 
   if (!state || state->recoveryStateEmitted) return;
@@ -371,33 +372,33 @@ static void emit_recovery_state(ListenerState *state) {
   };
   decision = muse_on_recovery_policy_evaluate(
       &state->recoveryPolicy, monotonic_ns(), observation);
+  outcome = muse_on_recovery_outcome_for(decision, observation);
   /* HID enumeration and filter proof may settle over several timer ticks.
    * The safety latch already makes routing_is_enabled() return false. */
-  if (decision == MUSE_ON_RECOVERY_WAIT ||
+  if (outcome == MUSE_ON_RECOVERY_OUTCOME_WAIT ||
       decision == MUSE_ON_RECOVERY_DONE) {
     return;
   }
   printf("{\"event\":\"recovery_state\","
-         "\"recoverySucceeded\":%s,"
+         "\"recoveryOutcome\":\"%s\","
+         "\"recoveryFailure\":\"%s\","
          "\"permissionGranted\":%s,\"controllerConnected\":%s,"
          "\"multipleControllers\":%s,\"codexForeground\":%s,"
          "\"inputsReleased\":%s,\"filterVerified\":%s,"
          "\"keyboardOpen\":%s}\n",
-         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS),
-         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS &&
-                        filter_permissions_ready(state)),
-         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS
-                            ? controllerConnected
-                            : true),
-         /* The impossible pair makes every failure unambiguously fail closed
-          * to the host's existing topology-validation gate. */
-         boolean_string(decision == MUSE_ON_RECOVERY_SUCCESS
-                            ? completeCount > 1
-                            : true),
+         muse_on_recovery_outcome_string(outcome),
+         muse_on_safety_failure_string(
+             outcome == MUSE_ON_RECOVERY_OUTCOME_FAILURE
+                 ? MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN
+                 : MUSE_ON_SAFETY_FAILURE_NONE),
+         boolean_string(observation.permission_granted),
+         boolean_string(observation.controller_connected),
+         boolean_string(observation.multiple_controllers),
          boolean_string(state->codexFrontmost),
          boolean_string(inputsReleased), boolean_string(filterVerified),
          boolean_string(state->keyboardOpen));
   state->recoveryStateEmitted = true;
+  stopRequested = 1;
 }
 
 static bool slot_matches_active_filter(const ListenerState *state,
