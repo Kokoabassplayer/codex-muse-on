@@ -244,9 +244,9 @@ bool muse_on_action_router_route(MuseOnActionRouter *router,
       router->turntable_repeat_action = mapped.id;
       router->turntable_repeat_source = source;
       router->turntable_repeat_next_ns =
-          timestamp_ns > UINT64_MAX - MUSE_ON_TURNTABLE_REPEAT_NS
+          timestamp_ns > UINT64_MAX - MUSE_ON_TURNTABLE_INITIAL_REPEAT_NS
               ? UINT64_MAX
-              : timestamp_ns + MUSE_ON_TURNTABLE_REPEAT_NS;
+              : timestamp_ns + MUSE_ON_TURNTABLE_INITIAL_REPEAT_NS;
     }
     if (router->trigger_seen[id] &&
         (timestamp_ns < router->trigger_last_ns[id] ||

@@ -92,7 +92,8 @@ typedef struct {
 } MuseOnControlMapping;
 
 enum { MUSE_ON_HOLD_DEBOUNCE_NS = 20000000ULL };
-enum { MUSE_ON_TURNTABLE_REPEAT_NS = 100000000ULL };
+enum { MUSE_ON_TURNTABLE_INITIAL_REPEAT_NS = 600000000ULL };
+enum { MUSE_ON_TURNTABLE_REPEAT_NS = 300000000ULL };
 
 typedef struct {
   MuseOnProfile profile;

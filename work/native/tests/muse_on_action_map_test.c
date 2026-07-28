@@ -209,22 +209,24 @@ static void test_turntable_direction_repeats_until_released(void) {
       &router, MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED,
       1000000000ULL, &action));
   assert(action.id == MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT);
-  assert(!muse_on_action_router_tick(&router, 1099999999ULL, &action));
-  assert(muse_on_action_router_tick(&router, 1100000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1599999999ULL, &action));
+  assert(muse_on_action_router_tick(&router, 1600000000ULL, &action));
   assert(action.id == MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT);
   assert(action.phase == MUSE_ON_ACTION_TRIGGER);
   assert(action.source == MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED);
-  assert(muse_on_action_router_tick(&router, 1200000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1899999999ULL, &action));
+  assert(muse_on_action_router_tick(&router, 1900000000ULL, &action));
   assert(!muse_on_action_router_route(
       &router, MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_RELEASED,
-      1210000000ULL, &action));
-  assert(!muse_on_action_router_tick(&router, 1500000000ULL, &action));
+      1910000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1990000000ULL, &action));
 
   assert(muse_on_action_router_route(
       &router, MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED,
       2000000000ULL, &action));
   assert(action.id == MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT);
-  assert(muse_on_action_router_tick(&router, 2100000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 2599999999ULL, &action));
+  assert(muse_on_action_router_tick(&router, 2600000000ULL, &action));
   assert(action.id == MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT);
 }
 
