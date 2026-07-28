@@ -90,6 +90,7 @@ struct ListenerState {
   bool topologyInitialSettled;
   bool topologyClassificationFailed;
   MuseOnRecoveryPolicy recoveryPolicy;
+  MuseOnKeyFilterRestorePolicy filterRestorePolicy;
   uint64_t filterRetryAfterNs;
   uint64_t permissionCheckAfterNs;
 };
@@ -721,7 +722,8 @@ static DeviceSlot *active_keyboard_slot_at_location(ListenerState *state,
 
 static void activate_keyboard_filter(ListenerState *state, uint64_t nowNs,
                                      const char *reason);
-static void restore_keyboard_filter(ListenerState *state, const char *reason);
+static bool restore_keyboard_filter(ListenerState *state, uint64_t nowNs,
+                                    const char *reason, bool finalAttempt);
 
 static void device_added(void *context, IOReturn result, void *sender,
                          IOHIDDeviceRef device) {
@@ -803,7 +805,8 @@ static void device_added(void *context, IOReturn result, void *sender,
     uint32_t controllerLocation;
     if (state->keyFilterApplied &&
         !validated_controller_location(state, &controllerLocation)) {
-      restore_keyboard_filter(state, "controller_topology_changed");
+      restore_keyboard_filter(state, monotonic_ns(),
+                              "controller_topology_changed", false);
     } else if (!state->keyFilterApplied) {
       activate_keyboard_filter(state, monotonic_ns(), "controller_connected");
     }
@@ -841,24 +844,16 @@ static void device_removed(void *context, IOReturn result, void *sender,
   if (state->config.mode != MUSE_ON_MODE_DRY_RUN && state->keyFilterApplied) {
     uint32_t controllerLocation;
     if (!validated_controller_location(state, &controllerLocation)) {
-      restore_keyboard_filter(state, "controller_disconnected");
+      restore_keyboard_filter(state, monotonic_ns(), "controller_disconnected",
+                              false);
       return;
     }
   }
   if (slot->kind == kInterfaceKeyboard &&
       slot->locationID == muse_on_key_filter_location_id(state->keyFilter) &&
       state->config.mode != MUSE_ON_MODE_DRY_RUN) {
-    state->keyFilterApplied = false;
-    force_release_synthetic_hold(state, "device_removed");
-    if (muse_on_key_filter_needs_restore(state->keyFilter) &&
-        !muse_on_key_filter_restore(state->keyFilter)) {
-      emit_error(state, "restore_keyboard_filter", kIOReturnError);
-      state->releaseFailed = true;
-      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
-      stopRequested = 1;
-      return;
-    }
-    emit_capture_state(state, "filter_restored", "keyboard_disconnected");
+    restore_keyboard_filter(state, monotonic_ns(), "keyboard_disconnected",
+                            false);
   } else if (state->syntheticHoldDown) {
     force_release_synthetic_hold(state, "device_removed");
   }
@@ -869,24 +864,52 @@ static void stop_signal(int signalNumber) {
   stopRequested = 1;
 }
 
-static void restore_keyboard_filter(ListenerState *state,
-                                    const char *reason) {
+static bool restore_keyboard_filter(ListenerState *state, uint64_t nowNs,
+                                    const char *reason, bool finalAttempt) {
+  MuseOnKeyFilterRestoreDecision decision;
+  bool firstAttempt;
   bool restoreNeeded;
+  bool restored;
 
+  firstAttempt = !state->filterRestorePolicy.waiting;
   state->keyFilterApplied = false;
-  force_release_synthetic_hold(state, reason);
-  reset_slots(state, kInterfaceUnknown, false);
-  state->filterRetryAfterNs = 0;
-  restoreNeeded = muse_on_key_filter_needs_restore(state->keyFilter);
-  if (!restoreNeeded) return;
-  if (!muse_on_key_filter_restore(state->keyFilter)) {
-    emit_error(state, "restore_keyboard_filter", kIOReturnError);
-    state->releaseFailed = true;
-    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
-    stopRequested = 1;
-    return;
+  if (firstAttempt) {
+    force_release_synthetic_hold(state, reason);
+    reset_slots(state, kInterfaceUnknown, false);
+    state->filterRetryAfterNs = 0;
   }
-  emit_capture_state(state, "filter_restored", reason);
+  restoreNeeded = muse_on_key_filter_needs_restore(state->keyFilter);
+  if (!restoreNeeded) {
+    muse_on_key_filter_restore_policy_init(&state->filterRestorePolicy);
+    state->filterRetryAfterNs = 0;
+    return true;
+  }
+  if (!finalAttempt && state->filterRestorePolicy.waiting &&
+      nowNs < state->filterRetryAfterNs) {
+    return false;
+  }
+
+  restored = muse_on_key_filter_restore(state->keyFilter);
+  decision = muse_on_key_filter_restore_policy_evaluate(
+      &state->filterRestorePolicy, nowNs, restored, finalAttempt);
+  if (decision == MUSE_ON_KEY_FILTER_RESTORE_COMPLETE) {
+    state->filterRetryAfterNs = 0;
+    emit_capture_state(state, "filter_restored", reason);
+    return true;
+  }
+  if (decision == MUSE_ON_KEY_FILTER_RESTORE_RETRY) {
+    state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
+    if (firstAttempt) {
+      emit_capture_state(state, "filter_waiting", "restore_settling");
+    }
+    return false;
+  }
+
+  emit_error(state, "restore_keyboard_filter", kIOReturnError);
+  state->releaseFailed = true;
+  emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
+  stopRequested = 1;
+  return false;
 }
 
 static void activate_keyboard_filter(ListenerState *state,
@@ -899,13 +922,11 @@ static void activate_keyboard_filter(ListenerState *state,
       state->keyFilterApplied || muse_on_key_filter_is_active(state->keyFilter)) {
     return;
   }
-  if (muse_on_key_filter_needs_restore(state->keyFilter) &&
-      !muse_on_key_filter_restore(state->keyFilter)) {
-    emit_error(state, "recover_keyboard_filter", kIOReturnError);
-    state->releaseFailed = true;
-    emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
-    stopRequested = 1;
-    return;
+  if (muse_on_key_filter_needs_restore(state->keyFilter)) {
+    if (!restore_keyboard_filter(state, nowNs, "recover_keyboard_filter",
+                                 false)) {
+      return;
+    }
   }
   if (!validated_controller_location(state, &controllerLocation)) {
     emit_capture_state(state, "filter_waiting", "controller_incomplete");
@@ -921,11 +942,8 @@ static void activate_keyboard_filter(ListenerState *state,
   if (!muse_on_key_filter_apply(state->keyFilter, keyboardSlot->locationID)) {
     emit_error(state, "apply_keyboard_filter", kIOReturnError);
     if (muse_on_key_filter_needs_restore(state->keyFilter) &&
-        !muse_on_key_filter_restore(state->keyFilter)) {
-      emit_error(state, "rollback_keyboard_filter", kIOReturnError);
-      state->releaseFailed = true;
-      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
-      stopRequested = 1;
+        !restore_keyboard_filter(state, nowNs, "rollback_keyboard_filter",
+                                 false)) {
       return;
     }
     state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
@@ -961,8 +979,9 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
                filter_permissions_ready(state) &&
                validated_controller_location(state, &controllerLocation);
   if (!wantFilter && (state->keyFilterApplied ||
-                      muse_on_key_filter_needs_restore(state->keyFilter))) {
-    restore_keyboard_filter(state, "filter_not_requested");
+                      muse_on_key_filter_needs_restore(state->keyFilter)) &&
+      nowNs >= state->filterRetryAfterNs) {
+    restore_keyboard_filter(state, nowNs, "filter_not_requested", false);
   } else if (wantFilter && !state->keyFilterApplied &&
              nowNs >= state->filterRetryAfterNs) {
     activate_keyboard_filter(state, nowNs, "session_filter");
@@ -1110,6 +1129,7 @@ int main(int argc, char *argv[]) {
             argv[0]);
     return 64;
   }
+  muse_on_key_filter_restore_policy_init(&state.filterRestorePolicy);
 
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
@@ -1242,7 +1262,7 @@ int main(int argc, char *argv[]) {
 shutdown:
   emit_topology_snapshot(
       (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
-  restore_keyboard_filter(&state, "process_exit");
+  restore_keyboard_filter(&state, monotonic_ns(), "process_exit", true);
   if (state.keyboardOpen) {
     IOReturn keyboardClosed =
         IOHIDManagerClose(state.keyboardManager, kIOHIDOptionsTypeNone);

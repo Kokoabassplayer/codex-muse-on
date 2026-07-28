@@ -86,6 +86,42 @@ bool muse_on_key_filter_restore_is_verified(bool original_mapping_was_null,
   return !readback_is_null;
 }
 
+void muse_on_key_filter_restore_policy_init(
+    MuseOnKeyFilterRestorePolicy *policy) {
+  if (!policy) return;
+  policy->waiting = false;
+  policy->started_at_ns = 0;
+}
+
+MuseOnKeyFilterRestoreDecision muse_on_key_filter_restore_policy_evaluate(
+    MuseOnKeyFilterRestorePolicy *policy, uint64_t now_ns,
+    bool restore_succeeded, bool final_attempt) {
+  uint64_t elapsed_ns;
+
+  if (!policy) return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
+  if (restore_succeeded) {
+    muse_on_key_filter_restore_policy_init(policy);
+    return MUSE_ON_KEY_FILTER_RESTORE_COMPLETE;
+  }
+  if (final_attempt) {
+    muse_on_key_filter_restore_policy_init(policy);
+    return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
+  }
+  if (!policy->waiting) {
+    policy->waiting = true;
+    policy->started_at_ns = now_ns;
+    return MUSE_ON_KEY_FILTER_RESTORE_RETRY;
+  }
+  if (now_ns < policy->started_at_ns) {
+    return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
+  }
+  elapsed_ns = now_ns - policy->started_at_ns;
+  if (elapsed_ns >= MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS) {
+    return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
+  }
+  return MUSE_ON_KEY_FILTER_RESTORE_RETRY;
+}
+
 static bool copy_uint64_property(IOHIDServiceClientRef service, CFStringRef key,
                                  uint64_t *value) {
   CFTypeRef property;

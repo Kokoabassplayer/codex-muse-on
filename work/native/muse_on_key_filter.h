@@ -12,6 +12,24 @@ typedef struct {
   uint64_t destination;
 } MuseOnKeyFilterMapping;
 
+/*
+ * IOHIDEventSystem can retain a just-unplugged keyboard service briefly after
+ * IOHIDManager reports the interface removal. Keep dispatch blocked while
+ * bounded restore attempts wait for that service teardown to settle.
+ */
+#define MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS UINT64_C(2000000000)
+
+typedef enum {
+  MUSE_ON_KEY_FILTER_RESTORE_RETRY = 0,
+  MUSE_ON_KEY_FILTER_RESTORE_COMPLETE,
+  MUSE_ON_KEY_FILTER_RESTORE_FAILED,
+} MuseOnKeyFilterRestoreDecision;
+
+typedef struct {
+  bool waiting;
+  uint64_t started_at_ns;
+} MuseOnKeyFilterRestorePolicy;
+
 extern const MuseOnKeyFilterMapping muse_on_key_filter_mappings[];
 extern const size_t muse_on_key_filter_mapping_count;
 
@@ -24,6 +42,11 @@ bool muse_on_key_filter_service_matches(uint32_t vendor_id, uint32_t product_id,
 bool muse_on_key_filter_restore_is_verified(bool original_mapping_was_null,
                                             bool readback_is_null,
                                             size_t readback_count);
+void muse_on_key_filter_restore_policy_init(
+    MuseOnKeyFilterRestorePolicy *policy);
+MuseOnKeyFilterRestoreDecision muse_on_key_filter_restore_policy_evaluate(
+    MuseOnKeyFilterRestorePolicy *policy, uint64_t now_ns,
+    bool restore_succeeded, bool final_attempt);
 
 MuseOnKeyFilter *muse_on_key_filter_create(void);
 void muse_on_key_filter_destroy(MuseOnKeyFilter *filter);

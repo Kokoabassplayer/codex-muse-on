@@ -57,9 +57,55 @@ static void test_restore_verification_accepts_only_the_expected_shape(void) {
   assert(muse_on_key_filter_restore_is_verified(false, false, 1));
 }
 
+static void test_restore_settlement_retries_transient_disconnect_race(void) {
+  MuseOnKeyFilterRestorePolicy policy;
+
+  muse_on_key_filter_restore_policy_init(&policy);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, UINT64_C(100), false, false) ==
+         MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy,
+             UINT64_C(100) +
+                 MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS -
+                 UINT64_C(1),
+             false, false) == MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy,
+             UINT64_C(100) +
+                 MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS,
+             false, false) == MUSE_ON_KEY_FILTER_RESTORE_FAILED);
+}
+
+static void test_restore_settlement_clears_after_verified_restore(void) {
+  MuseOnKeyFilterRestorePolicy policy;
+
+  muse_on_key_filter_restore_policy_init(&policy);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, UINT64_C(100), false, false) ==
+         MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, UINT64_C(200), true, false) ==
+         MUSE_ON_KEY_FILTER_RESTORE_COMPLETE);
+  assert(!policy.waiting);
+  assert(policy.started_at_ns == 0);
+}
+
+static void test_final_restore_attempt_fails_without_settlement_delay(void) {
+  MuseOnKeyFilterRestorePolicy policy;
+
+  muse_on_key_filter_restore_policy_init(&policy);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, UINT64_C(100), false, true) ==
+         MUSE_ON_KEY_FILTER_RESTORE_FAILED);
+}
+
 int main(void) {
   test_sink_mapping_table_is_exact_and_valid();
   test_only_the_exact_muse_on_keyboard_service_matches();
   test_restore_verification_accepts_only_the_expected_shape();
+  test_restore_settlement_retries_transient_disconnect_race();
+  test_restore_settlement_clears_after_verified_restore();
+  test_final_restore_attempt_fails_without_settlement_delay();
   return 0;
 }
