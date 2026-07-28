@@ -25,6 +25,8 @@ static NSString *const kControlProfileKey = @"controlProfile";
 static NSString *const kStartupApprovalRequiredKey = @"startupApprovalRequired";
 static NSString *const kSafeQuitVerifiedKey = @"safeQuitVerified";
 static NSString *const kDisablePendingKey = @"disablePending";
+static NSString *const kResponsiblePermissionRequestHandledKey =
+    @"responsiblePermissionRequestHandled";
 
 typedef enum {
   kListenerStopNone = 0,
@@ -936,10 +938,40 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (void)recordListenerProtocolFailure;
 - (void)syncTopologyHostState;
 - (void)requireNeutralEntry;
+- (void)requestResponsiblePermissionsForTrigger:
+    (MuseOnPermissionRequestTrigger)trigger;
 - (void)updatePermissionStateFromEvent:(NSDictionary *)event;
 @end
 
 @implementation MuseOnAppDelegate
+
+- (void)requestResponsiblePermissionsForTrigger:
+    (MuseOnPermissionRequestTrigger)trigger {
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  MuseOnResponsiblePermissionPlan plan =
+      muse_on_responsible_permission_plan(
+          trigger, _setup.enabled,
+          [defaults boolForKey:kResponsiblePermissionRequestHandledKey],
+          muse_on_input_monitoring_access_granted(),
+          muse_on_preflight_post_event_access());
+
+  /*
+   * macOS attributes a child listener's TCC checks to the responsible
+   * application. Request both permissions from the menu-bar app after an
+   * explicit First Enable or Retry; the listener still reports the
+   * authoritative runtime result before any HID manager opens or action
+   * dispatches.
+   */
+  if (plan.mark_handled) {
+    [defaults setBool:YES forKey:kResponsiblePermissionRequestHandledKey];
+  }
+  if (plan.request_gates & MUSE_ON_PERMISSION_GATE_INPUT_MONITORING) {
+    (void)muse_on_request_input_monitoring_access();
+  }
+  if (plan.request_gates & MUSE_ON_PERMISSION_GATE_ACCESSIBILITY) {
+    (void)muse_on_request_post_event_access();
+  }
+}
 
 - (void)updatePermissionStateFromEvent:(NSDictionary *)event {
   MuseOnPermissionGate gates = self.missingPermissionGates;
@@ -2276,6 +2308,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   [self saveSetup];
   if (isFirstEnable) {
     [defaults setBool:YES forKey:kFirstEnableCompletedKey];
+    [self requestResponsiblePermissionsForTrigger:
+              MUSE_ON_PERMISSION_REQUEST_FIRST_ENABLE];
     if (@available(macOS 10.14, *)) {
       [[UNUserNotificationCenter currentNotificationCenter]
           requestAuthorizationWithOptions:UNAuthorizationOptionAlert
@@ -2284,9 +2318,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     }
   }
   [self applyStartupPreference];
-  [self startListenerWithSafetyLatch:NO
-                  requestPermissions:muse_on_listener_request_mode_is_explicit(
-                                          isFirstEnable, YES)];
+  [self startListenerWithSafetyLatch:NO requestPermissions:NO];
   [self refreshMenuWithCommand:MUSE_ON_COMMAND_ENABLE];
 }
 
@@ -2401,6 +2433,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 }
 
 - (void)retry:(id)sender {
+  [self requestResponsiblePermissionsForTrigger:
+            MUSE_ON_PERMISSION_REQUEST_RETRY];
   self.retryPermissionPending = YES;
   self.retryPermissionDestinationOpened = NO;
   if (_coordinator.disable_pending) {

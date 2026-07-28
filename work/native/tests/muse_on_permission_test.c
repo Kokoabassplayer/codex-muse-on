@@ -70,22 +70,62 @@ static void test_not_permitted_keyboard_manager_error_is_permission_routed(void)
       "input_report", kIOReturnNotPermitted));
 }
 
-static void test_input_monitoring_request_is_first_enable_only_and_once(void) {
-  assert(muse_on_should_request_input_monitoring(true, true, false));
-  assert(!muse_on_should_request_input_monitoring(true, true, true));
-  assert(!muse_on_should_request_input_monitoring(false, true, false));
-  assert(!muse_on_should_request_input_monitoring(false, false, false));
-  /* Retry supplies checks only; it never enters the First Enable request path. */
-  assert(!muse_on_should_request_input_monitoring(false, true, false));
-}
-
-static void test_listener_probe_ignores_host_preflight_and_is_single_owned(void) {
-  /* The probe decision has no host-TCC input: a false host preflight cannot
-   * prevent the helper identity from reporting its own authoritative state. */
+static void test_listener_probe_remains_runtime_authority(void) {
+  /* Responsible-app consent prepares TCC, but only the listener's runtime
+   * probe decides whether capture may proceed. */
   assert(muse_on_should_launch_listener_probe(true, false, false));
   assert(!muse_on_should_launch_listener_probe(true, false, true));
   assert(!muse_on_should_launch_listener_probe(false, false, false));
   assert(!muse_on_should_launch_listener_probe(true, true, false));
+}
+
+static void test_responsible_app_requests_missing_permissions_only_on_consent(void) {
+  const MuseOnPermissionGate both =
+      MUSE_ON_PERMISSION_GATE_INPUT_MONITORING |
+      MUSE_ON_PERMISSION_GATE_ACCESSIBILITY;
+  MuseOnResponsiblePermissionPlan plan;
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_PASSIVE, true, false, false, false);
+  assert(plan.request_gates == MUSE_ON_PERMISSION_GATE_NONE);
+  assert(!plan.mark_handled);
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_FIRST_ENABLE, true, false, false, false);
+  assert(plan.request_gates == both);
+  assert(plan.mark_handled);
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_RETRY, true, false, false, false);
+  assert(plan.request_gates == both);
+  assert(plan.mark_handled);
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_RETRY, false, false, false, false);
+  assert(plan.request_gates == MUSE_ON_PERMISSION_GATE_NONE);
+  assert(!plan.mark_handled);
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_RETRY, true, true, false, false);
+  assert(plan.request_gates == MUSE_ON_PERMISSION_GATE_NONE);
+  assert(!plan.mark_handled);
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_RETRY, true, false, true, false);
+  assert(plan.request_gates == MUSE_ON_PERMISSION_GATE_ACCESSIBILITY);
+  assert(plan.mark_handled);
+
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_RETRY, true, false, false, true);
+  assert(plan.request_gates == MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
+  assert(plan.mark_handled);
+
+  /* First Enable consumes the one request opportunity even when permissions
+   * were already granted, so later revocation never causes a recurring prompt. */
+  plan = muse_on_responsible_permission_plan(
+      MUSE_ON_PERMISSION_REQUEST_FIRST_ENABLE, true, false, true, true);
+  assert(plan.request_gates == MUSE_ON_PERMISSION_GATE_NONE);
+  assert(plan.mark_handled);
 }
 
 static void test_retry_routes_once_after_authoritative_listener_event(void) {
@@ -132,7 +172,7 @@ static void test_missing_permission_gates_are_specific(void) {
                "Permission required — enable Input Monitoring and Accessibility.") == 0);
 }
 
-static void test_retry_guides_next_missing_permission_without_requests(void) {
+static void test_retry_guides_next_missing_permission(void) {
   assert(muse_on_retry_permission_gate(false, false) ==
          MUSE_ON_PERMISSION_GATE_INPUT_MONITORING);
   assert(muse_on_retry_permission_gate(false, true) ==
@@ -153,25 +193,6 @@ static void test_permission_guidance_selects_exact_settings_destinations(void) {
   assert(strcmp(muse_on_permission_gate_settings_url(
                    MUSE_ON_PERMISSION_GATE_NONE),
                muse_on_permission_fallback_settings_url()) == 0);
-}
-
-static void test_permission_requests_require_first_enable_and_are_once_only(void) {
-  MuseOnPermissionGate gates[] = {
-      MUSE_ON_PERMISSION_GATE_INPUT_MONITORING,
-      MUSE_ON_PERMISSION_GATE_ACCESSIBILITY,
-  };
-
-  for (size_t index = 0; index < sizeof(gates) / sizeof(gates[0]); index++) {
-    assert(muse_on_should_request_permission(gates[index], true, true, false));
-    assert(!muse_on_should_request_permission(gates[index], false, true, false));
-    assert(!muse_on_should_request_permission(gates[index], true, true, true));
-    assert(!muse_on_should_request_permission(gates[index], true, false, false));
-  }
-  assert(!muse_on_should_request_permission(MUSE_ON_PERMISSION_GATE_NONE,
-                                            true, true, false));
-  assert(muse_on_listener_request_mode_is_explicit(true, true));
-  assert(!muse_on_listener_request_mode_is_explicit(false, true));
-  assert(!muse_on_listener_request_mode_is_explicit(true, false));
 }
 
 static void test_permission_recovery_requires_fresh_neutral_entry(void) {
@@ -217,13 +238,12 @@ int main(void) {
   test_generic_keyboard_manager_error_remains_safety_latch();
   test_safety_failure_retains_priority_over_permission_state();
   test_not_permitted_keyboard_manager_error_is_permission_routed();
-  test_input_monitoring_request_is_first_enable_only_and_once();
-  test_listener_probe_ignores_host_preflight_and_is_single_owned();
+  test_listener_probe_remains_runtime_authority();
+  test_responsible_app_requests_missing_permissions_only_on_consent();
   test_retry_routes_once_after_authoritative_listener_event();
   test_missing_permission_gates_are_specific();
-  test_retry_guides_next_missing_permission_without_requests();
+  test_retry_guides_next_missing_permission();
   test_permission_guidance_selects_exact_settings_destinations();
-  test_permission_requests_require_first_enable_and_are_once_only();
   test_permission_recovery_requires_fresh_neutral_entry();
   return 0;
 }

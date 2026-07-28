@@ -24,6 +24,17 @@ typedef enum {
   MUSE_ON_PERMISSION_GATE_ACCESSIBILITY = 1 << 1
 } MuseOnPermissionGate;
 
+typedef enum {
+  MUSE_ON_PERMISSION_REQUEST_PASSIVE = 0,
+  MUSE_ON_PERMISSION_REQUEST_FIRST_ENABLE,
+  MUSE_ON_PERMISSION_REQUEST_RETRY
+} MuseOnPermissionRequestTrigger;
+
+typedef struct {
+  MuseOnPermissionGate request_gates;
+  bool mark_handled;
+} MuseOnResponsiblePermissionPlan;
+
 bool muse_on_bundle_id_is_codex(const char *bundle_id);
 bool muse_on_codex_is_frontmost(void);
 bool muse_on_session_is_available(void);
@@ -39,8 +50,10 @@ MuseOnPermissionGate muse_on_listener_missing_permission_gates(
 bool muse_on_should_open_retry_permission_settings(
     bool retry_requested, bool authoritative, MuseOnPermissionGate missing,
     bool destination_already_opened);
-bool muse_on_listener_request_mode_is_explicit(bool first_enable,
-                                               bool request_permissions);
+MuseOnResponsiblePermissionPlan muse_on_responsible_permission_plan(
+    MuseOnPermissionRequestTrigger trigger, bool enabled,
+    bool request_already_attempted,
+    bool input_monitoring_granted, bool accessibility_granted);
 MuseOnPermissionGate muse_on_missing_permission_gates(
     bool input_monitoring_granted, bool accessibility_granted);
 MuseOnPermissionGate muse_on_retry_permission_gate(
@@ -48,13 +61,6 @@ MuseOnPermissionGate muse_on_retry_permission_gate(
 const char *muse_on_permission_guidance(MuseOnPermissionGate gates);
 const char *muse_on_permission_gate_settings_url(MuseOnPermissionGate gate);
 const char *muse_on_permission_fallback_settings_url(void);
-bool muse_on_should_request_permission(MuseOnPermissionGate gate,
-                                       bool first_enable,
-                                       bool access_requires_request,
-                                       bool request_already_attempted);
-bool muse_on_should_request_input_monitoring(bool first_enable,
-                                             bool access_unknown,
-                                             bool request_already_attempted);
 bool muse_on_listener_error_is_permission_required(const char *operation,
                                                   int32_t code);
 size_t muse_on_hyper_key_event_sequence(uint16_t mac_virtual_key,

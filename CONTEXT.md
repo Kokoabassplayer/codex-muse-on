@@ -61,12 +61,12 @@ A prior process end that did not verify Safe Quit, including a crash, Force Quit
 _Avoid_: Normal Quit, automatic resume
 
 **Retry**:
-An explicit request to revalidate device, permission, filter, and hold safety after a Safety latch.
-_Avoid_: Enable, reconnect
+An explicit request to revalidate device, permission, filter, and hold safety after a Safety latch. Retry may make the installation's one missing-permission request from the responsible Codex Muse-On app identity if First Enable did not already make it; later retries only recheck and guide to Settings. Login, relaunch, and routine gate changes never prompt.
+_Avoid_: Enable, reconnect, automatic permission prompt
 
 **Permission Required**:
-An Inactive reason indicating that a required control permission is absent. Denial during First Enable preserves Enabled without another prompt; the app sends nothing and waits for Open Settings and Retry, while explicit Disable cancels the intent.
-_Avoid_: Permission error, automatic prompt
+An Inactive reason indicating that a required control permission is absent. Denial during First Enable preserves Enabled without recurring or automatic prompts; the app sends nothing and waits for Open Settings or an explicit Retry, while explicit Disable cancels the intent.
+_Avoid_: Permission error, recurring prompt, login prompt
 
 **Connected**:
 The state in which the Muse-On button interface and joystick interface from the same physical controller are both present and validated. An external Mac keyboard is never required.
