@@ -92,6 +92,7 @@ typedef struct {
 } MuseOnControlMapping;
 
 enum { MUSE_ON_HOLD_DEBOUNCE_NS = 20000000ULL };
+enum { MUSE_ON_TURNTABLE_REPEAT_NS = 100000000ULL };
 
 typedef struct {
   MuseOnProfile profile;
@@ -102,6 +103,10 @@ typedef struct {
   bool hold_pending_active;
   uint64_t hold_pending_since_ns;
   MuseOnEventName hold_pending_source;
+  bool turntable_repeat_active;
+  MuseOnActionId turntable_repeat_action;
+  MuseOnEventName turntable_repeat_source;
+  uint64_t turntable_repeat_next_ns;
 } MuseOnActionRouter;
 
 bool muse_on_map_event(MuseOnProfile profile, MuseOnEventName source,

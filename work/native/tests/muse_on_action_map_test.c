@@ -33,9 +33,9 @@ static void test_confirmed_controller_mappings(void) {
       {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_BLACK8_UP,
        MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD, MUSE_ON_ACTION_END},
       {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED,
-       MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT, MUSE_ON_ACTION_TRIGGER},
-      {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED,
        MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT, MUSE_ON_ACTION_TRIGGER},
+      {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED,
+       MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT, MUSE_ON_ACTION_TRIGGER},
       {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_LEFT_BALL_NORTH_ENGAGED,
        MUSE_ON_ACTION_PREVIOUS_THREAD, MUSE_ON_ACTION_TRIGGER},
       {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_LEFT_BALL_SOUTH_ENGAGED,
@@ -200,6 +200,34 @@ static void test_white1_measured_press_dispatches_once(void) {
                                      1250000000ULL, &action));
 }
 
+static void test_turntable_direction_repeats_until_released(void) {
+  MuseOnActionRouter router;
+  MuseOnActionEvent action;
+
+  muse_on_action_router_init(&router, MUSE_ON_PROFILE_CONTROLLER_ONLY);
+  assert(muse_on_action_router_route(
+      &router, MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED,
+      1000000000ULL, &action));
+  assert(action.id == MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT);
+  assert(!muse_on_action_router_tick(&router, 1099999999ULL, &action));
+  assert(muse_on_action_router_tick(&router, 1100000000ULL, &action));
+  assert(action.id == MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT);
+  assert(action.phase == MUSE_ON_ACTION_TRIGGER);
+  assert(action.source == MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED);
+  assert(muse_on_action_router_tick(&router, 1200000000ULL, &action));
+  assert(!muse_on_action_router_route(
+      &router, MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_RELEASED,
+      1210000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1500000000ULL, &action));
+
+  assert(muse_on_action_router_route(
+      &router, MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED,
+      2000000000ULL, &action));
+  assert(action.id == MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT);
+  assert(muse_on_action_router_tick(&router, 2100000000ULL, &action));
+  assert(action.id == MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT);
+}
+
 static void test_pedal_hold_bounce_requires_stable_begin_and_end(void) {
   MuseOnActionRouter router;
   MuseOnActionEvent action;
@@ -276,6 +304,7 @@ int main(void) {
   test_stable_strings();
   test_trigger_bounce_uses_measured_source_thresholds();
   test_white1_measured_press_dispatches_once();
+  test_turntable_direction_repeats_until_released();
   test_pedal_hold_bounce_requires_stable_begin_and_end();
   test_hold_pending_begin_is_cancelled_by_release();
   test_hold_duplicate_begin_and_repress_cancel_pending_release();

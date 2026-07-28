@@ -38,15 +38,15 @@ static const MuseOnControlMapping kControlMap[] = {
      0.066667f, 0.126126f, 0.24f, 0.486486f,
      MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED,
      MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_RELEASED, 20000000ULL, false,
-     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT),
-      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT)}},
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT)}},
     {"turntable.counterclockwise", "Turntable counterclockwise",
      MUSE_ON_CONTROL_GROUP_TURNTABLE, MUSE_ON_CONTROL_SHAPE_TURNTABLE,
      0.066667f, 0.126126f, 0.24f, 0.486486f,
      MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED,
      MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_RELEASED, 20000000ULL, false,
-     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT),
-      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT)}},
+     {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT),
+      TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_DECREASE_REASONING_EFFORT)}},
     {"white1", "White button 1", MUSE_ON_CONTROL_GROUP_WHITE_BUTTONS,
      MUSE_ON_CONTROL_SHAPE_BUTTON, 0.431111f, 0.409910f, 0.086667f, 0.139640f,
      MUSE_ON_EVENT_WHITE1_DOWN, MUSE_ON_EVENT_WHITE1_UP, 250000000ULL, false,
@@ -147,6 +147,23 @@ static uint64_t trigger_debounce_ns(MuseOnEventName source) {
   return 20000000ULL;
 }
 
+static MuseOnEventName turntable_engaged_event_for_release(
+    MuseOnEventName source) {
+  switch (source) {
+    case MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_RELEASED:
+      return MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED;
+    case MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_RELEASED:
+      return MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED;
+    default:
+      return MUSE_ON_EVENT_NONE;
+  }
+}
+
+static bool is_turntable_engaged_event(MuseOnEventName source) {
+  return source == MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED ||
+         source == MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED;
+}
+
 void muse_on_action_router_init(MuseOnActionRouter *router, MuseOnProfile profile) {
   unsigned int index;
 
@@ -161,39 +178,80 @@ void muse_on_action_router_init(MuseOnActionRouter *router, MuseOnProfile profil
   router->hold_pending_active = false;
   router->hold_pending_since_ns = 0;
   router->hold_pending_source = MUSE_ON_EVENT_NONE;
+  router->turntable_repeat_active = false;
+  router->turntable_repeat_action =
+      MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT;
+  router->turntable_repeat_source = MUSE_ON_EVENT_NONE;
+  router->turntable_repeat_next_ns = 0;
 }
 
 bool muse_on_action_router_tick(MuseOnActionRouter *router, uint64_t timestamp_ns,
                                 MuseOnActionEvent *action) {
   MuseOnActionPhase phase;
 
-  if (!router || !router->hold_pending ||
-      timestamp_ns < router->hold_pending_since_ns ||
-      timestamp_ns - router->hold_pending_since_ns < MUSE_ON_HOLD_DEBOUNCE_NS) {
+  if (!router || !action) return false;
+  if (router->hold_pending &&
+      timestamp_ns >= router->hold_pending_since_ns &&
+      timestamp_ns - router->hold_pending_since_ns >=
+          MUSE_ON_HOLD_DEBOUNCE_NS) {
+    router->hold_active = router->hold_pending_active;
+    router->hold_pending = false;
+    phase = router->hold_active ? MUSE_ON_ACTION_BEGIN : MUSE_ON_ACTION_END;
+    return set_action(action, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD, phase,
+                      router->hold_pending_source);
+  }
+  if (!router->turntable_repeat_active ||
+      timestamp_ns < router->turntable_repeat_next_ns) {
     return false;
   }
-  router->hold_active = router->hold_pending_active;
-  router->hold_pending = false;
-  phase = router->hold_active ? MUSE_ON_ACTION_BEGIN : MUSE_ON_ACTION_END;
-  return set_action(action, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD, phase,
-                    router->hold_pending_source);
+  router->turntable_repeat_next_ns =
+      timestamp_ns > UINT64_MAX - MUSE_ON_TURNTABLE_REPEAT_NS
+          ? UINT64_MAX
+          : timestamp_ns + MUSE_ON_TURNTABLE_REPEAT_NS;
+  router->trigger_seen[router->turntable_repeat_action] = true;
+  router->trigger_last_ns[router->turntable_repeat_action] = timestamp_ns;
+  return set_action(action, router->turntable_repeat_action,
+                    MUSE_ON_ACTION_TRIGGER,
+                    router->turntable_repeat_source);
 }
 
 bool muse_on_action_router_route(MuseOnActionRouter *router,
                                  MuseOnEventName source, uint64_t timestamp_ns,
                                  MuseOnActionEvent *action) {
   MuseOnActionEvent mapped;
+  MuseOnEventName released_engaged_event;
   unsigned int id;
 
-  if (!router || !action || !muse_on_map_event(router->profile, source, &mapped)) {
+  if (!router || !action) return false;
+  released_engaged_event = turntable_engaged_event_for_release(source);
+  if (released_engaged_event != MUSE_ON_EVENT_NONE) {
+    if (router->turntable_repeat_active &&
+        router->turntable_repeat_source == released_engaged_event) {
+      router->turntable_repeat_active = false;
+      router->turntable_repeat_source = MUSE_ON_EVENT_NONE;
+      router->turntable_repeat_next_ns = 0;
+    }
+    return false;
+  }
+  if (!muse_on_map_event(router->profile, source, &mapped)) {
     return false;
   }
   if (mapped.phase == MUSE_ON_ACTION_TRIGGER) {
     id = (unsigned int)mapped.id;
-    if (id >= MUSE_ON_ACTION_COUNT ||
-        (router->trigger_seen[id] &&
-         (timestamp_ns < router->trigger_last_ns[id] ||
-          timestamp_ns - router->trigger_last_ns[id] < trigger_debounce_ns(source)))) {
+    if (id >= MUSE_ON_ACTION_COUNT) return false;
+    if (is_turntable_engaged_event(source)) {
+      router->turntable_repeat_active = true;
+      router->turntable_repeat_action = mapped.id;
+      router->turntable_repeat_source = source;
+      router->turntable_repeat_next_ns =
+          timestamp_ns > UINT64_MAX - MUSE_ON_TURNTABLE_REPEAT_NS
+              ? UINT64_MAX
+              : timestamp_ns + MUSE_ON_TURNTABLE_REPEAT_NS;
+    }
+    if (router->trigger_seen[id] &&
+        (timestamp_ns < router->trigger_last_ns[id] ||
+         timestamp_ns - router->trigger_last_ns[id] <
+             trigger_debounce_ns(source))) {
       return false;
     }
     router->trigger_seen[id] = true;
