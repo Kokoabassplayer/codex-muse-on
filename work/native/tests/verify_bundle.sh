@@ -7,6 +7,7 @@ APP_PATH=${1:-"$NATIVE_DIR/build/Codex Muse-On.app"}
 CONTENTS_DIR="$APP_PATH/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 PLIST="$CONTENTS_DIR/Info.plist"
+LOCAL_SIGN_IDENTITY="Codex Muse-On Local Development"
 
 if [ ! -d "$APP_PATH" ]; then
   echo "bundle not found: $APP_PATH" >&2
@@ -85,14 +86,26 @@ if ! signature_info=$(codesign --display --verbose=4 "$APP_PATH" 2>&1); then
   echo "$signature_info" >&2
   exit 1
 fi
-case "$signature_info" in
-  *"Signature=adhoc"*) ;;
-  *)
-    echo "bundle is not ad-hoc signed" >&2
-    echo "$signature_info" >&2
-    exit 1
-    ;;
-esac
+if security find-identity -v -p codesigning 2>/dev/null |
+    grep -F "\"$LOCAL_SIGN_IDENTITY\"" >/dev/null; then
+  case "$signature_info" in
+    *"Authority=$LOCAL_SIGN_IDENTITY"*) signature_kind="local-stable" ;;
+    *)
+      echo "bundle is not signed with the stable local identity" >&2
+      echo "$signature_info" >&2
+      exit 1
+      ;;
+  esac
+else
+  case "$signature_info" in
+    *"Signature=adhoc"*) signature_kind="adhoc" ;;
+    *)
+      echo "bundle is not ad-hoc signed" >&2
+      echo "$signature_info" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 printf '%s\n' \
   "Verified bundle: $APP_PATH" \
@@ -101,4 +114,4 @@ printf '%s\n' \
   "LSMinimumSystemVersion=13.0" \
   "LSUIElement=true" \
   "Executables=CodexMuseOn,muse_on_listener" \
-  "Signature=adhoc"
+  "Signature=$signature_kind"

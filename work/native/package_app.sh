@@ -8,6 +8,17 @@ BUILD_DIR="$NATIVE_DIR/build"
 APP_PATH="$BUILD_DIR/Codex Muse-On.app"
 CONTENTS_DIR="$APP_PATH/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+LOCAL_SIGN_IDENTITY="Codex Muse-On Local Development"
+
+SIGN_IDENTITY=${MUSE_ON_CODE_SIGN_IDENTITY:-}
+if [ -z "$SIGN_IDENTITY" ]; then
+  if security find-identity -v -p codesigning 2>/dev/null |
+      grep -F "\"$LOCAL_SIGN_IDENTITY\"" >/dev/null; then
+    SIGN_IDENTITY=$LOCAL_SIGN_IDENTITY
+  else
+    SIGN_IDENTITY=-
+  fi
+fi
 
 rm -rf "$APP_PATH"
 mkdir -p "$MACOS_DIR"
@@ -43,10 +54,11 @@ clang -std=c11 -Wall -Wextra -Werror -pedantic -I"$NATIVE_DIR" \
   -framework AppKit -framework ApplicationServices -framework Carbon \
   -o "$MACOS_DIR/muse_on_listener"
 cp "$NATIVE_DIR/app/Info.plist" "$CONTENTS_DIR/Info.plist"
-codesign --force --sign - --timestamp=none "$MACOS_DIR/CodexMuseOn"
-codesign --force --sign - --timestamp=none \
+codesign --force --sign "$SIGN_IDENTITY" --timestamp=none \
+  "$MACOS_DIR/CodexMuseOn"
+codesign --force --sign "$SIGN_IDENTITY" --timestamp=none \
   --identifier "com.kokoabassplayer.codex-muse-on.listener" \
   "$MACOS_DIR/muse_on_listener"
-codesign --force --sign - --timestamp=none "$APP_PATH"
+codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$APP_PATH"
 
 printf '%s\n' "$APP_PATH"
