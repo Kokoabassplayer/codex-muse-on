@@ -95,7 +95,7 @@ void muse_on_key_filter_restore_policy_init(
 
 MuseOnKeyFilterRestoreDecision muse_on_key_filter_restore_policy_evaluate(
     MuseOnKeyFilterRestorePolicy *policy, uint64_t now_ns,
-    bool restore_succeeded, bool final_attempt) {
+    bool restore_succeeded, bool keyboard_present, bool final_attempt) {
   uint64_t elapsed_ns;
 
   if (!policy) return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
@@ -106,6 +106,10 @@ MuseOnKeyFilterRestoreDecision muse_on_key_filter_restore_policy_evaluate(
   if (final_attempt) {
     muse_on_key_filter_restore_policy_init(policy);
     return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
+  }
+  if (!keyboard_present) {
+    muse_on_key_filter_restore_policy_init(policy);
+    return MUSE_ON_KEY_FILTER_RESTORE_RETRY;
   }
   if (!policy->waiting) {
     policy->waiting = true;

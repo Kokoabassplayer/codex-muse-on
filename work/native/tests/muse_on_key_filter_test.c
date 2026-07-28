@@ -62,19 +62,19 @@ static void test_restore_settlement_retries_transient_disconnect_race(void) {
 
   muse_on_key_filter_restore_policy_init(&policy);
   assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, UINT64_C(100), false, false) ==
+             &policy, UINT64_C(100), false, true, false) ==
          MUSE_ON_KEY_FILTER_RESTORE_RETRY);
   assert(muse_on_key_filter_restore_policy_evaluate(
              &policy,
              UINT64_C(100) +
                  MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS -
                  UINT64_C(1),
-             false, false) == MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+             false, true, false) == MUSE_ON_KEY_FILTER_RESTORE_RETRY);
   assert(muse_on_key_filter_restore_policy_evaluate(
              &policy,
              UINT64_C(100) +
                  MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS,
-             false, false) == MUSE_ON_KEY_FILTER_RESTORE_FAILED);
+             false, true, false) == MUSE_ON_KEY_FILTER_RESTORE_FAILED);
 }
 
 static void test_restore_settlement_clears_after_verified_restore(void) {
@@ -82,13 +82,39 @@ static void test_restore_settlement_clears_after_verified_restore(void) {
 
   muse_on_key_filter_restore_policy_init(&policy);
   assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, UINT64_C(100), false, false) ==
+             &policy, UINT64_C(100), false, true, false) ==
          MUSE_ON_KEY_FILTER_RESTORE_RETRY);
   assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, UINT64_C(200), true, false) ==
+             &policy, UINT64_C(200), true, true, false) ==
          MUSE_ON_KEY_FILTER_RESTORE_COMPLETE);
   assert(!policy.waiting);
   assert(policy.started_at_ns == 0);
+}
+
+static void test_restore_settlement_pauses_while_keyboard_is_absent(void) {
+  MuseOnKeyFilterRestorePolicy policy;
+  uint64_t reconnect_ns =
+      UINT64_C(100) + MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS * UINT64_C(10);
+
+  muse_on_key_filter_restore_policy_init(&policy);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, UINT64_C(100), false, false, false) ==
+         MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+  assert(!policy.waiting);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, reconnect_ns, false, false, false) ==
+         MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+  assert(!policy.waiting);
+
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy, reconnect_ns, false, true, false) ==
+         MUSE_ON_KEY_FILTER_RESTORE_RETRY);
+  assert(policy.waiting);
+  assert(policy.started_at_ns == reconnect_ns);
+  assert(muse_on_key_filter_restore_policy_evaluate(
+             &policy,
+             reconnect_ns + MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS,
+             false, true, false) == MUSE_ON_KEY_FILTER_RESTORE_FAILED);
 }
 
 static void test_final_restore_attempt_fails_without_settlement_delay(void) {
@@ -96,7 +122,7 @@ static void test_final_restore_attempt_fails_without_settlement_delay(void) {
 
   muse_on_key_filter_restore_policy_init(&policy);
   assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, UINT64_C(100), false, true) ==
+             &policy, UINT64_C(100), false, false, true) ==
          MUSE_ON_KEY_FILTER_RESTORE_FAILED);
 }
 
@@ -106,6 +132,7 @@ int main(void) {
   test_restore_verification_accepts_only_the_expected_shape();
   test_restore_settlement_retries_transient_disconnect_race();
   test_restore_settlement_clears_after_verified_restore();
+  test_restore_settlement_pauses_while_keyboard_is_absent();
   test_final_restore_attempt_fails_without_settlement_delay();
   return 0;
 }

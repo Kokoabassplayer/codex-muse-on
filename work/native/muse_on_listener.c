@@ -868,10 +868,13 @@ static bool restore_keyboard_filter(ListenerState *state, uint64_t nowNs,
                                     const char *reason, bool finalAttempt) {
   MuseOnKeyFilterRestoreDecision decision;
   bool firstAttempt;
+  bool keyboardPresent;
   bool restoreNeeded;
   bool restored;
+  uint64_t filterLocation;
 
-  firstAttempt = !state->filterRestorePolicy.waiting;
+  firstAttempt = !state->filterRestorePolicy.waiting &&
+                 state->filterRetryAfterNs == 0;
   state->keyFilterApplied = false;
   if (firstAttempt) {
     force_release_synthetic_hold(state, reason);
@@ -884,14 +887,20 @@ static bool restore_keyboard_filter(ListenerState *state, uint64_t nowNs,
     state->filterRetryAfterNs = 0;
     return true;
   }
+  filterLocation = muse_on_key_filter_location_id(state->keyFilter);
+  keyboardPresent =
+      filterLocation != 0 && filterLocation <= UINT32_MAX &&
+      active_keyboard_slot_at_location(state, (uint32_t)filterLocation) != NULL;
   if (!finalAttempt && state->filterRestorePolicy.waiting &&
+      keyboardPresent &&
       nowNs < state->filterRetryAfterNs) {
     return false;
   }
 
   restored = muse_on_key_filter_restore(state->keyFilter);
   decision = muse_on_key_filter_restore_policy_evaluate(
-      &state->filterRestorePolicy, nowNs, restored, finalAttempt);
+      &state->filterRestorePolicy, nowNs, restored, keyboardPresent,
+      finalAttempt);
   if (decision == MUSE_ON_KEY_FILTER_RESTORE_COMPLETE) {
     state->filterRetryAfterNs = 0;
     emit_capture_state(state, "filter_restored", reason);

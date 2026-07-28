@@ -46,7 +46,7 @@ void muse_on_key_filter_restore_policy_init(
     MuseOnKeyFilterRestorePolicy *policy);
 MuseOnKeyFilterRestoreDecision muse_on_key_filter_restore_policy_evaluate(
     MuseOnKeyFilterRestorePolicy *policy, uint64_t now_ns,
-    bool restore_succeeded, bool final_attempt);
+    bool restore_succeeded, bool keyboard_present, bool final_attempt);
 
 MuseOnKeyFilter *muse_on_key_filter_create(void);
 void muse_on_key_filter_destroy(MuseOnKeyFilter *filter);
