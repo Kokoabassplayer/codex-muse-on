@@ -91,11 +91,33 @@ static void test_duplicate_signals_finalize_once(void) {
   assert(gate.termination_reason == MUSE_ON_LISTENER_TERMINATION_EXIT);
 }
 
+static void test_permission_required_clean_exit_proves_cleanup(void) {
+  MuseOnListenerCompletionGate gate = good_gate();
+  MuseOnListenerCompletionResult result;
+
+  muse_on_listener_completion_gate_mark_stdout_eof(&gate);
+  muse_on_listener_completion_gate_mark_termination(
+      &gate, MUSE_ON_LISTENER_TERMINATION_EXIT, 0);
+  result = muse_on_listener_completion_gate_try_finalize(
+      &gate, false, false, true, true, true, false);
+  assert(result == MUSE_ON_LISTENER_COMPLETION_ACCEPTED);
+  assert(muse_on_listener_cleanup_known_after_completion(false, result));
+}
+
+static void test_unknown_cleanup_never_becomes_known(void) {
+  assert(!muse_on_listener_cleanup_known_after_completion(
+      false, MUSE_ON_LISTENER_COMPLETION_FAIL_CLOSED));
+  assert(!muse_on_listener_cleanup_known_after_completion(
+      true, MUSE_ON_LISTENER_COMPLETION_FAIL_CLOSED));
+}
+
 int main(void) {
   test_termination_first_waits_for_stdout_eof();
   test_eof_first_matches_termination_first();
   test_invalid_recovery_and_cleanup_fail_closed();
   test_failed_termination_fail_closes();
   test_duplicate_signals_finalize_once();
+  test_permission_required_clean_exit_proves_cleanup();
+  test_unknown_cleanup_never_becomes_known();
   return 0;
 }

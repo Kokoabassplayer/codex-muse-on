@@ -1551,9 +1551,12 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     self.listenerSafetyFailure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
   }
   purpose = self.listenerStopPurpose;
-  if (purpose != kListenerStopNone) {
-    self.listenerCleanupKnown = cleanupVerified;
-  }
+  /* A permission-only helper can finish cleanly before any explicit stop
+   * purpose exists. Preserve that verified result so macOS Quit & Reopen is
+   * not mistaken for an uncertain listener cleanup. */
+  self.listenerCleanupKnown =
+      muse_on_listener_cleanup_known_after_completion(
+          purpose != kListenerStopNone, result);
   self.listenerTask = nil;
   [self handleListenerTerminationForPurpose:purpose
                            cleanupVerified:cleanupVerified];

@@ -75,4 +75,10 @@ muse_on_listener_completion_gate_try_finalize(
   return gate->result;
 }
 
+static inline bool muse_on_listener_cleanup_known_after_completion(
+    bool had_explicit_stop_purpose, MuseOnListenerCompletionResult result) {
+  (void)had_explicit_stop_purpose;
+  return result == MUSE_ON_LISTENER_COMPLETION_ACCEPTED;
+}
+
 #endif
