@@ -49,6 +49,115 @@ static void test_only_the_exact_muse_on_keyboard_service_matches(void) {
                                              UINT64_C(0x4321)));
 }
 
+static void test_restore_targets_original_registry_entry_not_usb_location(void) {
+  assert(muse_on_key_filter_restore_target_matches(UINT64_C(0x100012345),
+                                                   UINT64_C(0x100012345)));
+  assert(!muse_on_key_filter_restore_target_matches(UINT64_C(0x100012345),
+                                                    UINT64_C(0x100067890)));
+  assert(!muse_on_key_filter_restore_target_matches(0,
+                                                    UINT64_C(0x100012345)));
+}
+
+static void test_lookup_selects_exact_registry_not_reused_usb_location(void) {
+  const MuseOnKeyFilterServiceObservation observations[] = {
+      {
+          .registry_id_readable = true,
+          .registry_id = UINT64_C(0x100012345),
+          .metadata_readable = true,
+          .vendor_id = 0x04b4,
+          .product_id = 0xe106,
+          .usage_page = 0x01,
+          .usage = 0x06,
+          .location_id = UINT64_C(0x1234),
+      },
+      {
+          .registry_id_readable = true,
+          .registry_id = UINT64_C(0x100067890),
+          .metadata_readable = true,
+          .vendor_id = 0x04b4,
+          .product_id = 0xe106,
+          .usage_page = 0x01,
+          .usage = 0x06,
+          .location_id = UINT64_C(0x1234),
+      },
+  };
+  size_t matched_index = SIZE_MAX;
+
+  assert(muse_on_key_filter_select_service(
+             observations, 2, UINT64_C(0x100067890), UINT64_C(0x1234),
+             &matched_index) == MUSE_ON_KEY_FILTER_LOOKUP_MATCHED);
+  assert(matched_index == 1);
+}
+
+static void test_lookup_is_uncertain_when_identity_cannot_be_read(void) {
+  const MuseOnKeyFilterServiceObservation unreadable_registry[] = {
+      {
+          .registry_id_readable = false,
+      },
+  };
+  const MuseOnKeyFilterServiceObservation unreadable_metadata[] = {
+      {
+          .registry_id_readable = true,
+          .registry_id = UINT64_C(0x100067890),
+          .metadata_readable = false,
+      },
+  };
+  const MuseOnKeyFilterServiceObservation unrelated[] = {
+      {
+          .registry_id_readable = true,
+          .registry_id = UINT64_C(0x100012345),
+          .metadata_readable = false,
+      },
+  };
+  size_t matched_index = SIZE_MAX;
+
+  assert(muse_on_key_filter_select_service(
+             unreadable_registry, 1, UINT64_C(0x100067890),
+             UINT64_C(0x1234), &matched_index) ==
+         MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN);
+  assert(matched_index == SIZE_MAX);
+  assert(muse_on_key_filter_select_service(
+             unreadable_metadata, 1, UINT64_C(0x100067890),
+             UINT64_C(0x1234), &matched_index) ==
+         MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN);
+  assert(matched_index == SIZE_MAX);
+  assert(muse_on_key_filter_select_service(
+             unrelated, 1, UINT64_C(0x100067890), UINT64_C(0x1234),
+             &matched_index) == MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT);
+  assert(matched_index == SIZE_MAX);
+}
+
+static void test_lookup_rejects_ambiguous_duplicate_exact_identity(void) {
+  const MuseOnKeyFilterServiceObservation observations[] = {
+      {
+          .registry_id_readable = true,
+          .registry_id = UINT64_C(0x100067890),
+          .metadata_readable = true,
+          .vendor_id = 0x04b4,
+          .product_id = 0xe106,
+          .usage_page = 0x01,
+          .usage = 0x06,
+          .location_id = UINT64_C(0x1234),
+      },
+      {
+          .registry_id_readable = true,
+          .registry_id = UINT64_C(0x100067890),
+          .metadata_readable = true,
+          .vendor_id = 0x04b4,
+          .product_id = 0xe106,
+          .usage_page = 0x01,
+          .usage = 0x06,
+          .location_id = UINT64_C(0x1234),
+      },
+  };
+  size_t matched_index = SIZE_MAX;
+
+  assert(muse_on_key_filter_select_service(
+             observations, 2, UINT64_C(0x100067890), UINT64_C(0x1234),
+             &matched_index) == MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN);
+  assert(matched_index == SIZE_MAX);
+}
+
 static void test_restore_verification_accepts_only_the_expected_shape(void) {
   assert(muse_on_key_filter_restore_is_verified(true, true, 0));
   assert(muse_on_key_filter_restore_is_verified(true, false, 0));
@@ -91,9 +200,9 @@ static void test_restore_settlement_clears_after_verified_restore(void) {
   assert(policy.started_at_ns == 0);
 }
 
-static void test_restore_settlement_pauses_while_keyboard_is_absent(void) {
+static void test_restore_waits_without_deadline_when_keyboard_is_absent(void) {
   MuseOnKeyFilterRestorePolicy policy;
-  uint64_t reconnect_ns =
+  uint64_t later =
       UINT64_C(100) + MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS * UINT64_C(10);
 
   muse_on_key_filter_restore_policy_init(&policy);
@@ -102,37 +211,31 @@ static void test_restore_settlement_pauses_while_keyboard_is_absent(void) {
          MUSE_ON_KEY_FILTER_RESTORE_RETRY);
   assert(!policy.waiting);
   assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, reconnect_ns, false, false, false) ==
+             &policy, later, false, false, false) ==
          MUSE_ON_KEY_FILTER_RESTORE_RETRY);
   assert(!policy.waiting);
-
-  assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, reconnect_ns, false, true, false) ==
-         MUSE_ON_KEY_FILTER_RESTORE_RETRY);
-  assert(policy.waiting);
-  assert(policy.started_at_ns == reconnect_ns);
-  assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy,
-             reconnect_ns + MUSE_ON_KEY_FILTER_RESTORE_SETTLEMENT_NS,
-             false, true, false) == MUSE_ON_KEY_FILTER_RESTORE_FAILED);
 }
 
-static void test_final_restore_attempt_fails_without_settlement_delay(void) {
+static void test_final_restore_attempt_fails_for_present_keyboard(void) {
   MuseOnKeyFilterRestorePolicy policy;
 
   muse_on_key_filter_restore_policy_init(&policy);
   assert(muse_on_key_filter_restore_policy_evaluate(
-             &policy, UINT64_C(100), false, false, true) ==
+             &policy, UINT64_C(100), false, true, true) ==
          MUSE_ON_KEY_FILTER_RESTORE_FAILED);
 }
 
 int main(void) {
   test_sink_mapping_table_is_exact_and_valid();
   test_only_the_exact_muse_on_keyboard_service_matches();
+  test_restore_targets_original_registry_entry_not_usb_location();
+  test_lookup_selects_exact_registry_not_reused_usb_location();
+  test_lookup_is_uncertain_when_identity_cannot_be_read();
+  test_lookup_rejects_ambiguous_duplicate_exact_identity();
   test_restore_verification_accepts_only_the_expected_shape();
   test_restore_settlement_retries_transient_disconnect_race();
   test_restore_settlement_clears_after_verified_restore();
-  test_restore_settlement_pauses_while_keyboard_is_absent();
-  test_final_restore_attempt_fails_without_settlement_delay();
+  test_restore_waits_without_deadline_when_keyboard_is_absent();
+  test_final_restore_attempt_fails_for_present_keyboard();
   return 0;
 }

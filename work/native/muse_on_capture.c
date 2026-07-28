@@ -1,18 +1,18 @@
 #include "muse_on_capture.h"
 
-#include <IOKit/IOReturn.h>
 #include <IOKit/hid/IOHIDManager.h>
 
-uint32_t muse_on_capture_open_options(void) {
-  return (uint32_t)kIOHIDOptionsTypeSeizeDevice;
+uint32_t muse_on_joystick_open_options(bool capture_requested) {
+  return capture_requested ? (uint32_t)kIOHIDOptionsTypeSeizeDevice
+                           : (uint32_t)kIOHIDOptionsTypeNone;
 }
 
-bool muse_on_capture_is_verified(bool keyboard_open, bool joystick_open,
-                                 bool single_controller) {
-  return keyboard_open && joystick_open && single_controller;
+uint32_t muse_on_keyboard_capture_options(void) {
+  return (uint32_t)kIOHIDOptionsTypeNone;
 }
 
-bool muse_on_capture_close_result_is_acceptable(int32_t result) {
-  return result == kIOReturnSuccess || result == kIOReturnNotOpen ||
-         result == kIOReturnNoDevice || result == kIOReturnOffline;
+bool muse_on_capture_is_verified(bool joystick_open,
+                                 bool keyboard_filter_verified,
+                                 bool controller_connected) {
+  return joystick_open && keyboard_filter_verified && controller_connected;
 }

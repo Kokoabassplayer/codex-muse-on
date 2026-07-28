@@ -21,6 +21,7 @@ struct MuseOnKeyFilter {
   IOHIDEventSystemClientRef client;
   CFTypeRef original_mapping;
   uint64_t active_location_id;
+  uint64_t active_registry_id;
   bool original_mapping_was_null;
   bool restore_pending;
   bool active;
@@ -75,6 +76,58 @@ bool muse_on_key_filter_service_matches(uint32_t vendor_id, uint32_t product_id,
          usage == kMuseOnKeyboardUsage &&
          requested_location_id != 0 &&
          location_id == requested_location_id;
+}
+
+bool muse_on_key_filter_restore_target_matches(uint64_t saved_registry_id,
+                                               uint64_t candidate_registry_id) {
+  return saved_registry_id != 0 && saved_registry_id == candidate_registry_id;
+}
+
+MuseOnKeyFilterLookupResult muse_on_key_filter_select_service(
+    const MuseOnKeyFilterServiceObservation *observations,
+    size_t observation_count, uint64_t requested_registry_id,
+    uint64_t requested_location_id, size_t *matched_index) {
+  bool uncertain = false;
+  size_t found_index = SIZE_MAX;
+  size_t index;
+
+  if (!matched_index) return MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN;
+  *matched_index = SIZE_MAX;
+  if ((!observations && observation_count != 0) ||
+      requested_registry_id == 0 || requested_location_id == 0) {
+    return MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN;
+  }
+  for (index = 0; index < observation_count; ++index) {
+    const MuseOnKeyFilterServiceObservation *observation =
+        &observations[index];
+
+    if (!observation->registry_id_readable) {
+      uncertain = true;
+      continue;
+    }
+    if (!muse_on_key_filter_restore_target_matches(
+            requested_registry_id, observation->registry_id)) {
+      continue;
+    }
+    if (!observation->metadata_readable ||
+        !muse_on_key_filter_service_matches(
+            observation->vendor_id, observation->product_id,
+            observation->usage_page, observation->usage,
+            observation->location_id, requested_location_id)) {
+      uncertain = true;
+      continue;
+    }
+    if (found_index != SIZE_MAX) {
+      return MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN;
+    }
+    found_index = index;
+  }
+  if (found_index != SIZE_MAX) {
+    *matched_index = found_index;
+    return MUSE_ON_KEY_FILTER_LOOKUP_MATCHED;
+  }
+  return uncertain ? MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN
+                   : MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT;
 }
 
 bool muse_on_key_filter_restore_is_verified(bool original_mapping_was_null,
@@ -144,48 +197,105 @@ static bool copy_uint64_property(IOHIDServiceClientRef service, CFStringRef key,
   return copied;
 }
 
+static bool copy_registry_id(IOHIDServiceClientRef service, uint64_t *value) {
+  CFTypeRef registry_id;
+  int64_t signed_value;
+
+  if (!service || !value) return false;
+  registry_id = IOHIDServiceClientGetRegistryID(service);
+  if (!registry_id || CFGetTypeID(registry_id) != CFNumberGetTypeID() ||
+      !CFNumberGetValue((CFNumberRef)registry_id, kCFNumberSInt64Type,
+                        &signed_value) ||
+      signed_value <= 0) {
+    return false;
+  }
+  *value = (uint64_t)signed_value;
+  return true;
+}
+
 static IOHIDServiceClientRef find_keyboard_service(
     IOHIDEventSystemClientRef client, uint64_t requested_location_id,
-    uint64_t *matched_location_id, bool *enumerated) {
+    uint64_t requested_registry_id, uint64_t *matched_location_id,
+    uint64_t *matched_registry_id, MuseOnKeyFilterLookupResult *lookup_result) {
   CFArrayRef services;
+  MuseOnKeyFilterServiceObservation *observations = NULL;
+  size_t matched_index = SIZE_MAX;
+  size_t service_count;
   CFIndex index;
   IOHIDServiceClientRef match = NULL;
 
-  if (!client || !matched_location_id || !enumerated ||
-      requested_location_id == 0) {
+  if (!client || !matched_location_id || !matched_registry_id ||
+      !lookup_result || requested_location_id == 0 ||
+      requested_registry_id == 0) {
     return NULL;
   }
-  *enumerated = false;
+  *lookup_result = MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN;
   services = IOHIDEventSystemClientCopyServices(client);
   if (!services) return NULL;
-  *enumerated = true;
+  service_count = (size_t)CFArrayGetCount(services);
+  if (service_count == 0) {
+    *lookup_result = MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT;
+    CFRelease(services);
+    return NULL;
+  }
+  observations = calloc(service_count, sizeof(*observations));
+  if (!observations) {
+    CFRelease(services);
+    return NULL;
+  }
   for (index = 0; index < CFArrayGetCount(services); ++index) {
     IOHIDServiceClientRef service =
         (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, index);
+    MuseOnKeyFilterServiceObservation *observation = &observations[index];
     uint64_t vendor_id;
     uint64_t product_id;
     uint64_t usage_page;
     uint64_t usage;
     uint64_t location_id;
+    uint64_t registry_id;
 
-    if (!service ||
-        !copy_uint64_property(service, CFSTR(kIOHIDVendorIDKey), &vendor_id) ||
-        !copy_uint64_property(service, CFSTR(kIOHIDProductIDKey), &product_id) ||
-        !copy_uint64_property(service, CFSTR(kIOHIDPrimaryUsagePageKey),
-                              &usage_page) ||
-        !copy_uint64_property(service, CFSTR(kIOHIDPrimaryUsageKey), &usage) ||
-        !copy_uint64_property(service, CFSTR(kIOHIDLocationIDKey), &location_id) ||
-        vendor_id > UINT32_MAX || product_id > UINT32_MAX ||
-        usage_page > UINT32_MAX || usage > UINT32_MAX ||
-        !muse_on_key_filter_service_matches(
-            (uint32_t)vendor_id, (uint32_t)product_id, (uint32_t)usage_page,
-            (uint32_t)usage, location_id, requested_location_id)) {
+    if (!service) {
       continue;
     }
-    match = (IOHIDServiceClientRef)CFRetain(service);
-    *matched_location_id = location_id;
-    break;
+    observation->registry_id_readable =
+        copy_registry_id(service, &registry_id);
+    if (observation->registry_id_readable) {
+      observation->registry_id = registry_id;
+    }
+    observation->metadata_readable =
+        copy_uint64_property(service, CFSTR(kIOHIDVendorIDKey), &vendor_id) &&
+        copy_uint64_property(service, CFSTR(kIOHIDProductIDKey), &product_id) &&
+        copy_uint64_property(service, CFSTR(kIOHIDPrimaryUsagePageKey),
+                             &usage_page) &&
+        copy_uint64_property(service, CFSTR(kIOHIDPrimaryUsageKey), &usage) &&
+        copy_uint64_property(service, CFSTR(kIOHIDLocationIDKey), &location_id) &&
+        vendor_id <= UINT32_MAX && product_id <= UINT32_MAX &&
+        usage_page <= UINT32_MAX && usage <= UINT32_MAX;
+    if (observation->metadata_readable) {
+      observation->vendor_id = (uint32_t)vendor_id;
+      observation->product_id = (uint32_t)product_id;
+      observation->usage_page = (uint32_t)usage_page;
+      observation->usage = (uint32_t)usage;
+      observation->location_id = location_id;
+    }
   }
+  *lookup_result = muse_on_key_filter_select_service(
+      observations, service_count, requested_registry_id,
+      requested_location_id, &matched_index);
+  if (*lookup_result == MUSE_ON_KEY_FILTER_LOOKUP_MATCHED &&
+      matched_index < service_count) {
+    IOHIDServiceClientRef service =
+        (IOHIDServiceClientRef)CFArrayGetValueAtIndex(
+            services, (CFIndex)matched_index);
+    match = service ? (IOHIDServiceClientRef)CFRetain(service) : NULL;
+    if (!match) {
+      *lookup_result = MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN;
+    } else {
+      *matched_location_id = observations[matched_index].location_id;
+      *matched_registry_id = observations[matched_index].registry_id;
+    }
+  }
+  free(observations);
   CFRelease(services);
   return match;
 }
@@ -289,6 +399,7 @@ static void clear_saved_mapping(MuseOnKeyFilter *filter) {
   filter->original_mapping = NULL;
   filter->original_mapping_was_null = false;
   filter->active_location_id = 0;
+  filter->active_registry_id = 0;
   filter->restore_pending = false;
   filter->active = false;
 }
@@ -314,22 +425,26 @@ void muse_on_key_filter_destroy(MuseOnKeyFilter *filter) {
 }
 
 bool muse_on_key_filter_apply(MuseOnKeyFilter *filter,
-                              uint64_t requested_location_id) {
+                              uint64_t requested_location_id,
+                              uint64_t requested_registry_id) {
   IOHIDServiceClientRef service;
   CFTypeRef original_mapping;
   CFArrayRef sink_mapping;
   uint64_t matched_location_id;
-  bool enumerated;
+  uint64_t matched_registry_id;
+  MuseOnKeyFilterLookupResult lookup_result;
   bool property_set;
   bool verified;
 
   if (!filter || filter->active || filter->restore_pending ||
       !filter->client || requested_location_id == 0 ||
+      requested_registry_id == 0 ||
       !muse_on_key_filter_mapping_table_is_valid()) {
     return false;
   }
-  service = find_keyboard_service(filter->client, requested_location_id,
-                                  &matched_location_id, &enumerated);
+  service = find_keyboard_service(
+      filter->client, requested_location_id, requested_registry_id,
+      &matched_location_id, &matched_registry_id, &lookup_result);
   if (!service) return false;
   original_mapping = IOHIDServiceClientCopyProperty(
       service, CFSTR(kIOHIDUserKeyUsageMapKey));
@@ -363,6 +478,7 @@ bool muse_on_key_filter_apply(MuseOnKeyFilter *filter,
   filter->original_mapping = original_mapping;
   filter->original_mapping_was_null = original_mapping == NULL;
   filter->active_location_id = matched_location_id;
+  filter->active_registry_id = matched_registry_id;
   filter->restore_pending = true;
 
   property_set = IOHIDServiceClientSetProperty(
@@ -381,16 +497,20 @@ bool muse_on_key_filter_apply(MuseOnKeyFilter *filter,
 bool muse_on_key_filter_restore(MuseOnKeyFilter *filter) {
   IOHIDServiceClientRef service;
   uint64_t matched_location_id;
-  bool enumerated;
+  uint64_t matched_registry_id;
+  MuseOnKeyFilterLookupResult lookup_result;
   bool restored;
 
   if (!filter || !filter->client) return false;
   filter->active = false;
   if (!filter->restore_pending) return true;
-  service = find_keyboard_service(filter->client, filter->active_location_id,
-                                  &matched_location_id, &enumerated);
+  service = find_keyboard_service(
+      filter->client, filter->active_location_id, filter->active_registry_id,
+      &matched_location_id, &matched_registry_id, &lookup_result);
   if (!service) {
-    if (!enumerated) return false;
+    if (lookup_result != MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT) {
+      return false;
+    }
     /* A per-device UserKeyMapping disappears with the disconnected service. */
     clear_saved_mapping(filter);
     return true;
@@ -413,4 +533,8 @@ bool muse_on_key_filter_needs_restore(const MuseOnKeyFilter *filter) {
 
 uint64_t muse_on_key_filter_location_id(const MuseOnKeyFilter *filter) {
   return filter ? filter->active_location_id : 0;
+}
+
+uint64_t muse_on_key_filter_registry_id(const MuseOnKeyFilter *filter) {
+  return filter ? filter->active_registry_id : 0;
 }

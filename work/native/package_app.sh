@@ -33,6 +33,7 @@ clang -std=c11 -Wall -Wextra -Werror -pedantic -I"$NATIVE_DIR" \
   "$NATIVE_DIR/muse_on_config.c" \
   "$NATIVE_DIR/muse_on_activation.c" \
   "$NATIVE_DIR/muse_on_shortcut_map.c" \
+  "$NATIVE_DIR/muse_on_key_filter.c" \
   "$NATIVE_DIR/muse_on_capture.c" \
   "$NATIVE_DIR/muse_on_platform.m" \
   "$NATIVE_DIR/muse_on_state_coordinator.c" \
@@ -43,7 +44,9 @@ clang -std=c11 -Wall -Wextra -Werror -pedantic -I"$NATIVE_DIR" \
   -o "$MACOS_DIR/muse_on_listener"
 cp "$NATIVE_DIR/app/Info.plist" "$CONTENTS_DIR/Info.plist"
 codesign --force --sign - --timestamp=none "$MACOS_DIR/CodexMuseOn"
-codesign --force --sign - --timestamp=none "$MACOS_DIR/muse_on_listener"
+codesign --force --sign - --timestamp=none \
+  --identifier "com.kokoabassplayer.codex-muse-on.listener" \
+  "$MACOS_DIR/muse_on_listener"
 codesign --force --sign - --timestamp=none "$APP_PATH"
 
 printf '%s\n' "$APP_PATH"

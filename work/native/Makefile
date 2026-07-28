@@ -3,7 +3,8 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Werror -pedantic
 PLATFORM_FRAMEWORKS = -framework AppKit -framework ApplicationServices -framework Carbon
 HID_FRAMEWORKS = -framework IOKit -framework CoreFoundation
 PHASE2_SOURCES = muse_on_decoder.c muse_on_action_map.c muse_on_config.c \
-	muse_on_activation.c muse_on_shortcut_map.c muse_on_capture.c \
+	muse_on_activation.c muse_on_shortcut_map.c muse_on_key_filter.c \
+	muse_on_capture.c \
 	muse_on_platform.m muse_on_state_coordinator.c muse_on_connection.c
 TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_config_test muse_on_activation_test muse_on_shortcut_map_test \

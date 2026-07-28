@@ -1,32 +1,26 @@
-#include <assert.h>
-#include <stdint.h>
-
-#include <IOKit/IOReturn.h>
-
 #include "../muse_on_capture.h"
 
-static void test_capture_uses_exclusive_hid_access(void) {
-  assert(muse_on_capture_open_options() == UINT32_C(0x01));
+#include <assert.h>
+#include <IOKit/hid/IOHIDManager.h>
+
+static void test_hybrid_capture_options_are_interface_specific(void) {
+  assert(muse_on_joystick_open_options(true) ==
+         (uint32_t)kIOHIDOptionsTypeSeizeDevice);
+  assert(muse_on_joystick_open_options(false) ==
+         (uint32_t)kIOHIDOptionsTypeNone);
+  assert(muse_on_keyboard_capture_options() ==
+         (uint32_t)kIOHIDOptionsTypeNone);
 }
 
-static void test_capture_requires_both_interfaces_and_one_controller(void) {
+static void test_hybrid_capture_requires_both_controls(void) {
   assert(muse_on_capture_is_verified(true, true, true));
   assert(!muse_on_capture_is_verified(false, true, true));
   assert(!muse_on_capture_is_verified(true, false, true));
   assert(!muse_on_capture_is_verified(true, true, false));
 }
 
-static void test_capture_release_accepts_only_known_closed_states(void) {
-  assert(muse_on_capture_close_result_is_acceptable(kIOReturnSuccess));
-  assert(muse_on_capture_close_result_is_acceptable(kIOReturnNotOpen));
-  assert(muse_on_capture_close_result_is_acceptable(kIOReturnNoDevice));
-  assert(muse_on_capture_close_result_is_acceptable(kIOReturnOffline));
-  assert(!muse_on_capture_close_result_is_acceptable(kIOReturnError));
-}
-
 int main(void) {
-  test_capture_uses_exclusive_hid_access();
-  test_capture_requires_both_interfaces_and_one_controller();
-  test_capture_release_accepts_only_known_closed_states();
+  test_hybrid_capture_options_are_interface_specific();
+  test_hybrid_capture_requires_both_controls();
   return 0;
 }

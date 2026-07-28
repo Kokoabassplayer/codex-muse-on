@@ -66,6 +66,21 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$MACOS_DIR/CodexMuseOn"
 codesign --verify --strict --verbose=2 "$MACOS_DIR/muse_on_listener"
 
+if ! listener_signature_info=$(
+  codesign --display --verbose=4 "$MACOS_DIR/muse_on_listener" 2>&1
+); then
+  echo "$listener_signature_info" >&2
+  exit 1
+fi
+case "$listener_signature_info" in
+  *"Identifier=com.kokoabassplayer.codex-muse-on.listener"*) ;;
+  *)
+    echo "listener does not have its stable code-signing identifier" >&2
+    echo "$listener_signature_info" >&2
+    exit 1
+    ;;
+esac
+
 if ! signature_info=$(codesign --display --verbose=4 "$APP_PATH" 2>&1); then
   echo "$signature_info" >&2
   exit 1
