@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 #include <IOKit/hid/IOHIDDeviceKeys.h>
 #include <IOKit/hid/IOHIDProperties.h>
 #include <IOKit/hid/IOHIDUsageTables.h>
@@ -81,6 +82,21 @@ bool muse_on_key_filter_service_matches(uint32_t vendor_id, uint32_t product_id,
 bool muse_on_key_filter_restore_target_matches(uint64_t saved_registry_id,
                                                uint64_t candidate_registry_id) {
   return saved_registry_id != 0 && saved_registry_id == candidate_registry_id;
+}
+
+bool muse_on_key_filter_registry_chain_contains(
+    const uint64_t *registry_ids, size_t registry_id_count,
+    uint64_t requested_registry_id) {
+  size_t index;
+
+  if ((!registry_ids && registry_id_count != 0) ||
+      requested_registry_id == 0) {
+    return false;
+  }
+  for (index = 0; index < registry_id_count; ++index) {
+    if (registry_ids[index] == requested_registry_id) return true;
+  }
+  return false;
 }
 
 MuseOnKeyFilterLookupResult muse_on_key_filter_select_service(
@@ -197,11 +213,19 @@ static bool copy_uint64_property(IOHIDServiceClientRef service, CFStringRef key,
   return copied;
 }
 
-static bool copy_registry_id(IOHIDServiceClientRef service, uint64_t *value) {
+static bool copy_registry_ancestor_id(IOHIDServiceClientRef service,
+                                      uint64_t requested_registry_id,
+                                      uint64_t *value) {
   CFTypeRef registry_id;
+  CFMutableDictionaryRef matching;
+  io_registry_entry_t entry;
+  uint64_t registry_chain[64];
+  size_t registry_chain_count = 0;
   int64_t signed_value;
+  bool complete = false;
 
-  if (!service || !value) return false;
+  if (!service || requested_registry_id == 0 || !value) return false;
+  *value = 0;
   registry_id = IOHIDServiceClientGetRegistryID(service);
   if (!registry_id || CFGetTypeID(registry_id) != CFNumberGetTypeID() ||
       !CFNumberGetValue((CFNumberRef)registry_id, kCFNumberSInt64Type,
@@ -209,7 +233,48 @@ static bool copy_registry_id(IOHIDServiceClientRef service, uint64_t *value) {
       signed_value <= 0) {
     return false;
   }
-  *value = (uint64_t)signed_value;
+  matching = IORegistryEntryIDMatching((uint64_t)signed_value);
+  if (!matching) return false;
+  entry = IOServiceGetMatchingService(kIOMainPortDefault, matching);
+  if (entry == IO_OBJECT_NULL) return false;
+
+  while (entry != IO_OBJECT_NULL &&
+         registry_chain_count <
+             sizeof(registry_chain) / sizeof(registry_chain[0])) {
+    io_registry_entry_t parent = IO_OBJECT_NULL;
+    uint64_t current_id = 0;
+    kern_return_t result;
+
+    result = IORegistryEntryGetRegistryEntryID(entry, &current_id);
+    if (result != KERN_SUCCESS || current_id == 0) {
+      IOObjectRelease(entry);
+      return false;
+    }
+    registry_chain[registry_chain_count++] = current_id;
+    if (current_id == requested_registry_id) {
+      complete = true;
+      IOObjectRelease(entry);
+      break;
+    }
+
+    result = IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent);
+    IOObjectRelease(entry);
+    entry = IO_OBJECT_NULL;
+    if (result == KERN_SUCCESS && parent != IO_OBJECT_NULL) {
+      entry = parent;
+      continue;
+    }
+    if (result == kIOReturnNoDevice || result == kIOReturnNotFound) {
+      complete = true;
+    }
+    break;
+  }
+  if (entry != IO_OBJECT_NULL) IOObjectRelease(entry);
+  if (!complete) return false;
+  if (muse_on_key_filter_registry_chain_contains(
+          registry_chain, registry_chain_count, requested_registry_id)) {
+    *value = requested_registry_id;
+  }
   return true;
 }
 
@@ -257,8 +322,8 @@ static IOHIDServiceClientRef find_keyboard_service(
     if (!service) {
       continue;
     }
-    observation->registry_id_readable =
-        copy_registry_id(service, &registry_id);
+    observation->registry_id_readable = copy_registry_ancestor_id(
+        service, requested_registry_id, &registry_id);
     if (observation->registry_id_readable) {
       observation->registry_id = registry_id;
     }

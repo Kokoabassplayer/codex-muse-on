@@ -58,6 +58,9 @@ bool muse_on_key_filter_service_matches(uint32_t vendor_id, uint32_t product_id,
                                         uint64_t requested_location_id);
 bool muse_on_key_filter_restore_target_matches(uint64_t saved_registry_id,
                                                uint64_t candidate_registry_id);
+bool muse_on_key_filter_registry_chain_contains(
+    const uint64_t *registry_ids, size_t registry_id_count,
+    uint64_t requested_registry_id);
 MuseOnKeyFilterLookupResult muse_on_key_filter_select_service(
     const MuseOnKeyFilterServiceObservation *observations,
     size_t observation_count, uint64_t requested_registry_id,

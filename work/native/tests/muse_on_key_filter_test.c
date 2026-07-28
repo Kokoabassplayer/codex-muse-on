@@ -58,6 +58,24 @@ static void test_restore_targets_original_registry_entry_not_usb_location(void) 
                                                     UINT64_C(0x100012345)));
 }
 
+static void test_event_service_resolves_through_exact_device_ancestor(void) {
+  const uint64_t registry_chain[] = {
+      UINT64_C(0x10006aade), /* AppleUserHIDEventService */
+      UINT64_C(0x10006aad7), /* IOHIDInterface */
+      UINT64_C(0x10006aace), /* AppleUserHIDDevice */
+      UINT64_C(0x10006aacc), /* USB interface */
+  };
+
+  assert(muse_on_key_filter_registry_chain_contains(
+      registry_chain, 4, UINT64_C(0x10006aace)));
+  assert(!muse_on_key_filter_registry_chain_contains(
+      registry_chain, 4, UINT64_C(0x10006ffff)));
+  assert(!muse_on_key_filter_registry_chain_contains(
+      registry_chain, 4, 0));
+  assert(!muse_on_key_filter_registry_chain_contains(
+      NULL, 4, UINT64_C(0x10006aace)));
+}
+
 static void test_lookup_selects_exact_registry_not_reused_usb_location(void) {
   const MuseOnKeyFilterServiceObservation observations[] = {
       {
@@ -229,6 +247,7 @@ int main(void) {
   test_sink_mapping_table_is_exact_and_valid();
   test_only_the_exact_muse_on_keyboard_service_matches();
   test_restore_targets_original_registry_entry_not_usb_location();
+  test_event_service_resolves_through_exact_device_ancestor();
   test_lookup_selects_exact_registry_not_reused_usb_location();
   test_lookup_is_uncertain_when_identity_cannot_be_read();
   test_lookup_rejects_ambiguous_duplicate_exact_identity();
