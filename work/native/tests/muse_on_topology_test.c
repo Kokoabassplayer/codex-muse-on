@@ -196,6 +196,37 @@ static void test_focus_loss_requires_fresh_neutral_entry(void) {
   assert(coordinator.effects.request_dispatch);
 }
 
+static void test_multiple_to_single_requires_fresh_neutral_entry(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
+
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 7, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 7, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x770000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 7, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+
+  assert(muse_on_topology_host_apply_topology(
+             &host, 7, snapshot(MUSE_ON_CONNECTION_MULTIPLE, 0)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(!host.inputs_released);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 7, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x770000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(!host.inputs_released);
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(!coordinator.effects.request_dispatch);
+}
+
 static void test_invalid_snapshot_is_rejected_not_disconnected(void) {
   MuseOnTopologyHostState host;
 
@@ -213,6 +244,7 @@ int main(void) {
   test_stale_generation_and_unexpected_exit_fail_closed();
   test_typed_recovery_pending_requires_fresh_neutral_entry();
   test_focus_loss_requires_fresh_neutral_entry();
+  test_multiple_to_single_requires_fresh_neutral_entry();
   test_invalid_snapshot_is_rejected_not_disconnected();
   assert(strcmp(muse_on_connection_state_string(MUSE_ON_CONNECTION_UNKNOWN),
                 "unknown") == 0);
