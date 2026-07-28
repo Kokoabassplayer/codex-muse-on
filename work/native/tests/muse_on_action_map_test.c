@@ -214,8 +214,8 @@ static void test_turntable_direction_repeats_until_released(void) {
   assert(action.id == MUSE_ON_ACTION_COMPOSER_INCREASE_REASONING_EFFORT);
   assert(action.phase == MUSE_ON_ACTION_TRIGGER);
   assert(action.source == MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED);
-  assert(!muse_on_action_router_tick(&router, 1899999999ULL, &action));
-  assert(muse_on_action_router_tick(&router, 1900000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1849999999ULL, &action));
+  assert(muse_on_action_router_tick(&router, 1850000000ULL, &action));
   assert(!muse_on_action_router_route(
       &router, MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_RELEASED,
       1910000000ULL, &action));
