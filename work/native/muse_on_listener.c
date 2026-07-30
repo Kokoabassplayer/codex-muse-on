@@ -951,6 +951,7 @@ static void device_added(void *context, IOReturn result, void *sender,
   reset_slots(state, kInterfaceUnknown, false);
   probe_current_neutral_entries(state);
   emit_device_event("device_added", slot);
+  emit_current_topology(state);
   if (state->config.mode != MUSE_ON_MODE_DRY_RUN) {
     uint32_t controllerLocation;
     if (state->keyFilterApplied &&
@@ -961,7 +962,6 @@ static void device_added(void *context, IOReturn result, void *sender,
       activate_keyboard_filter(state, monotonic_ns(), "controller_connected");
     }
   }
-  emit_current_topology(state);
   emit_neutral_entry_if_connected(state);
 }
 

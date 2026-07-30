@@ -1333,7 +1333,10 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     }
     if (event[@"keyFilterApplied"]) {
       if (![self applyListenerFilterVerification:
-                [event[@"keyFilterApplied"] boolValue]]) return;
+                [event[@"keyFilterApplied"] boolValue]]) {
+        [self recordListenerProtocolFailure];
+        return;
+      }
       if (self.filterVerified) self.listenerSawFilterApplied = YES;
     }
     muse_on_diagnostics_record_listener_ready(&_diagnostics);
@@ -1344,12 +1347,18 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
     if (![self applyListenerFilterVerification:
-              [event[@"keyFilterApplied"] boolValue]]) return;
+              [event[@"keyFilterApplied"] boolValue]]) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
     if (self.filterVerified) self.listenerSawFilterApplied = YES;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_restored"]) {
     self.listenerSawFilterRestored = YES;
-    if (![self applyListenerFilterVerification:NO]) return;
+    if (![self applyListenerFilterVerification:NO]) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"neutral_entry"]) {
     if (!muse_on_topology_host_apply_neutral_entry(

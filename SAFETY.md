@@ -23,9 +23,10 @@ TCC, accessibility, UI, installation, or public-distribution acceptance.
   topology change, and a new generation clear that verification. Stale events
   cannot reactivate dispatch.
 - **Foreground boundary:** Only frontmost bundle ID `com.openai.codex`
-  qualifies. Focus loss resets Neutral Entry; foreground return alone does not
-  dispatch until a fresh release observation. Enabled, connected input remains
-  Reserved while dispatch is blocked.
+  qualifies. Focus or either paired-interface loss immediately blocks dispatch,
+  resets Neutral Entry, and attempts release of any synthetic hold. Foreground
+  return alone does not dispatch until a fresh release observation. Enabled,
+  connected input remains Reserved while dispatch is blocked.
 - **Safety and recovery:** Hold release and Pass-through restoration must be
   verified. A safety failure latches fail-closed; only explicit Retry with
   cleanup and current non-neutral safety gates, including verified
@@ -37,6 +38,24 @@ TCC, accessibility, UI, installation, or public-distribution acceptance.
 - **Local bundle:** the repository provides a stable installed local test-bundle
   contract with the menu-bar executable and listener. The stable local signing
   identity is used when available, otherwise the local bundle is ad-hoc signed.
+
+## Permissions, cleanup, and privacy
+
+- **Permissions:** Input Monitoring is required to observe the paired HID
+  interfaces. Accessibility is required to post the dedicated Codex shortcuts.
+  Denial, loss, or revocation leaves dispatch blocked and directs the owner to
+  macOS Settings; grants apply to the Codex Muse-On app identity, not one USB
+  device. Neither permission is evidence of current verified filtering/capture.
+- **Cleanup boundary:** Normal Disable, Safe Quit, disconnect, and safety
+  recovery release holds and require verified Pass-through restoration. An
+  unverified restoration remains Safety latched. Crash, Force Quit, power loss,
+  or `SIGKILL` cannot prove cleanup; the following launch treats that Unclean
+  Exit fail-closed until Retry revalidates it.
+- **Privilege and diagnostics:** The local app does not require Full Disk
+  Access, administrator privileges, or network access. Diagnostics are a
+  bounded in-memory history of state, action identifiers, and error codes; they
+  clear on Quit and exclude raw HID data, typed keys, chat content, and
+  unrelated app names.
 
 ## Known limitation
 

@@ -149,6 +149,11 @@ bool muse_on_topology_host_apply_filter_verification(
       !state->authority.authoritative) {
     return false;
   }
+  if (filter_verified &&
+      (state->authority.snapshot.state != MUSE_ON_CONNECTION_SINGLE ||
+       !state->controller_connected || state->multiple_controllers)) {
+    return false;
+  }
   state->filter_verified = filter_verified;
   return true;
 }
