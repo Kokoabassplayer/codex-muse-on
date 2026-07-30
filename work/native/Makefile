@@ -4,7 +4,7 @@ PLATFORM_FRAMEWORKS = -framework AppKit -framework ApplicationServices -framewor
 HID_FRAMEWORKS = -framework IOKit -framework CoreFoundation
 PHASE2_SOURCES = muse_on_decoder.c muse_on_action_map.c muse_on_config.c \
 	muse_on_activation.c muse_on_shortcut_map.c muse_on_key_filter.c \
-	muse_on_capture.c \
+	muse_on_capture.c muse_on_listener_lifecycle.c \
 	muse_on_platform.m muse_on_state_coordinator.c muse_on_connection.c
 TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_config_test muse_on_activation_test muse_on_shortcut_map_test \
@@ -22,13 +22,14 @@ FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
 	muse_on_protocol_test
 ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
 	muse_on_key_filter.plist muse_on_capture.plist muse_on_state_coordinator.plist \
+	muse_on_listener_lifecycle.plist \
 	muse_on_setup_state.plist muse_on_connection.plist \
 	muse_on_topology.plist \
 	muse_on_diagnostics.plist muse_on_menu_bar.plist \
 	muse_on_connection_observer.plist
 SANITIZER_FLAGS ?= -fsanitize=address,undefined
 
-test: $(TEST_BINARIES)
+test: verify-listener-lifecycle-binding $(TEST_BINARIES)
 	./muse_on_decoder_test
 	./muse_on_action_map_test
 	./muse_on_config_test
@@ -50,7 +51,7 @@ test: $(TEST_BINARIES)
 	./muse_on_focus_lifecycle_test
 	./muse_on_protocol_test
 
-test-focused: $(FOCUSED_TEST_BINARIES)
+test-focused: verify-listener-lifecycle-binding $(FOCUSED_TEST_BINARIES)
 	./muse_on_state_coordinator_test
 	./muse_on_connection_test
 	./muse_on_key_filter_test
@@ -154,12 +155,12 @@ muse_on_capture_test: muse_on_capture.c muse_on_action_map.c muse_on_decoder.c \
 		muse_on_decoder.c \
 		tests/muse_on_capture_test.c $(HID_FRAMEWORKS) -o $@
 
-muse_on_focus_lifecycle_test: muse_on_capture.c muse_on_action_map.c \
+muse_on_focus_lifecycle_test: muse_on_listener_lifecycle.c muse_on_capture.c muse_on_action_map.c \
 		muse_on_decoder.c muse_on_topology.c muse_on_connection.c \
 		muse_on_state_coordinator.c tests/muse_on_focus_lifecycle_test.c \
-		muse_on_capture.h muse_on_action_map.h muse_on_decoder.h \
+		muse_on_listener_lifecycle.h muse_on_capture.h muse_on_action_map.h muse_on_decoder.h \
 		muse_on_topology.h muse_on_connection.h muse_on_state_coordinator.h
-	$(CC) $(CFLAGS) -I. muse_on_capture.c muse_on_action_map.c \
+	$(CC) $(CFLAGS) -I. muse_on_listener_lifecycle.c muse_on_capture.c muse_on_action_map.c \
 		muse_on_decoder.c muse_on_topology.c muse_on_connection.c \
 		muse_on_state_coordinator.c tests/muse_on_focus_lifecycle_test.c \
 		$(HID_FRAMEWORKS) -o $@
@@ -167,6 +168,17 @@ muse_on_focus_lifecycle_test: muse_on_capture.c muse_on_action_map.c \
 muse_on_protocol_test: tests/muse_on_protocol_test.m muse_on_protocol.h
 	$(CC) $(CFLAGS) -fobjc-arc -I. tests/muse_on_protocol_test.m \
 		-framework Foundation -o $@
+
+muse_on_listener_binding.o: muse_on_listener.c muse_on_listener_lifecycle.h
+	$(CC) $(CFLAGS) -I. -c muse_on_listener.c -o $@
+
+verify-listener-lifecycle-binding: muse_on_listener_binding.o
+	@set -eu; \
+	symbols="$$(nm -u muse_on_listener_binding.o)"; \
+	printf '%s\n' "$$symbols" | grep -Eq '(_)?muse_on_listener_lifecycle_focus_changed$$'; \
+	printf '%s\n' "$$symbols" | grep -Eq '(_)?muse_on_listener_lifecycle_observe_report$$'; \
+	printf '%s\n' "$$symbols" | grep -Eq '(_)?muse_on_listener_lifecycle_tick$$'; \
+	printf '%s\n' 'Listener lifecycle binding: PASS'
 
 listener: muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c
 	$(CC) $(CFLAGS) -I. muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c \
@@ -177,6 +189,7 @@ analyze:
 	$(CC) --analyze $(CFLAGS) -I. muse_on_platform.m
 	$(CC) --analyze $(CFLAGS) -I. muse_on_key_filter.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_capture.c
+	$(CC) --analyze $(CFLAGS) -I. muse_on_listener_lifecycle.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_state_coordinator.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_setup_state.c
 	$(CC) --analyze $(CFLAGS) -I. muse_on_connection.c
@@ -208,6 +221,7 @@ verify-v1:
 
 clean:
 	rm -f $(TEST_BINARIES) $(TEST_BINARIES:%=%_san) \
-		muse_on_listener $(ANALYZER_REPORTS)
+		muse_on_listener muse_on_listener_binding.o $(ANALYZER_REPORTS)
 
-.PHONY: test test-focused test-sanitize clean listener analyze package verify-bundle verify-v1
+.PHONY: test test-focused test-sanitize clean listener analyze package \
+	verify-bundle verify-listener-lifecycle-binding verify-v1

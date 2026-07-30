@@ -162,6 +162,16 @@ bool muse_on_topology_host_apply_neutral_entry(
   return true;
 }
 
+bool muse_on_topology_host_apply_focus_changed(
+    MuseOnTopologyHostState *state, uint64_t generation, bool foreground) {
+  if (!state || state->authority.generation != generation ||
+      !state->authority.authoritative) {
+    return false;
+  }
+  if (!foreground) state->inputs_released = false;
+  return true;
+}
+
 bool muse_on_topology_host_apply_filter_verification(
     MuseOnTopologyHostState *state, uint64_t generation, bool filter_verified) {
   if (!state || state->authority.generation != generation ||

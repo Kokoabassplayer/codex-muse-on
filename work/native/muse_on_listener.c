@@ -18,6 +18,7 @@
 #include "muse_on_config.h"
 #include "muse_on_connection.h"
 #include "muse_on_key_filter.h"
+#include "muse_on_listener_lifecycle.h"
 #include "muse_on_platform.h"
 #include "muse_on_shortcut_map.h"
 #include "muse_on_state_coordinator.h"
@@ -57,9 +58,6 @@ typedef struct DeviceSlot {
   uint64_t registryID;
   InterfaceKind kind;
   CFIndex reportCapacity;
-  MuseOnDecoder decoder;
-  MuseOnActionRouter router;
-  bool neutralEntryReady;
   bool removed;
   struct DeviceSlot *next;
 } DeviceSlot;
@@ -82,8 +80,7 @@ struct ListenerState {
   bool keyboardOpen;
   bool keyFilterApplied;
   bool syntheticHoldDown;
-  bool codexFrontmost;
-  bool focusKnown;
+  MuseOnListenerLifecycle lifecycle;
   bool inputMonitoringAccess;
   bool postEventAccess;
   bool permissionsKnown;
@@ -232,6 +229,7 @@ static void emit_error(ListenerState *state, const char *operation,
 static void fail_topology_classification(ListenerState *state) {
   if (!state || state->topologyClassificationFailed) return;
   state->topologyClassificationFailed = true;
+  (void)muse_on_listener_lifecycle_unbind(&state->lifecycle);
   emit_error(state, "classify_topology", kIOReturnNoMemory);
   emit_topology_snapshot(
       (MuseOnConnectionSnapshot){MUSE_ON_CONNECTION_UNKNOWN, 0});
@@ -355,20 +353,6 @@ static bool validated_controller_location(const ListenerState *state,
   return true;
 }
 
-static bool all_inputs_released(const ListenerState *state) {
-  uint32_t locationID;
-  const DeviceSlot *slot;
-
-  if (!validated_controller_location(state, &locationID)) return false;
-  for (slot = state->slots; slot; slot = slot->next) {
-    if (!slot->removed && slot->locationID == locationID &&
-        !slot->neutralEntryReady) {
-      return false;
-    }
-  }
-  return true;
-}
-
 static bool read_keyboard_current_report(void *context, uint8_t reportID,
                                          uint8_t *report,
                                          size_t *reportLength) {
@@ -464,102 +448,10 @@ static bool read_joystick_current_element(
   return true;
 }
 
-static void probe_current_neutral_entries(ListenerState *state) {
-  DeviceSlot *slot;
-
-  if (!state) return;
-  for (slot = state->slots; slot; slot = slot->next) {
-    MuseOnNeutralEntryState neutralState;
-
-    if (slot->removed || slot->reportCapacity <= 0) continue;
-    if (slot->kind == kInterfaceJoystick) {
-      JoystickElementReaderContext reader = {
-          .device = slot->device,
-          .elements = IOHIDDeviceCopyMatchingElements(
-              slot->device, NULL, kIOHIDOptionsTypeNone),
-          .profile = state->config.profile,
-      };
-      neutralState = muse_on_capture_probe_joystick_elements(
-          &slot->decoder, state->config.profile,
-          read_joystick_current_element, &reader);
-      if (reader.elements) CFRelease(reader.elements);
-    } else {
-      uint8_t *report = calloc((size_t)slot->reportCapacity, sizeof(*report));
-      if (!report) {
-        slot->neutralEntryReady = false;
-        continue;
-      }
-      neutralState = muse_on_capture_probe_neutral_entry(
-          &slot->decoder, decoder_interface_kind(slot->kind),
-          state->config.profile, 0, report,
-          (size_t)slot->reportCapacity, read_keyboard_current_report, slot);
-      free(report);
-    }
-    slot->neutralEntryReady =
-        neutralState == MUSE_ON_NEUTRAL_ENTRY_RELEASED;
-  }
-}
-
-static void emit_neutral_entry_if_connected(const ListenerState *state) {
-  uint32_t locationID;
-
-  if (!validated_controller_location(state, &locationID)) return;
-  (void)locationID;
-  printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
-         boolean_string(all_inputs_released(state)));
-}
-
 static const DeviceSlot *active_keyboard_slot_at_location(
     const ListenerState *state, uint32_t locationID);
 static const DeviceSlot *active_joystick_slot_at_location(
     const ListenerState *state, uint32_t locationID);
-
-static MuseOnNeutralEntryState tracked_controller_neutral_state(
-    const ListenerState *state) {
-  const DeviceSlot *keyboardSlot;
-  const DeviceSlot *joystickSlot;
-  uint32_t controllerLocation;
-
-  if (!state ||
-      !validated_controller_location(state, &controllerLocation)) {
-    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
-  }
-  keyboardSlot =
-      active_keyboard_slot_at_location(state, controllerLocation);
-  joystickSlot =
-      active_joystick_slot_at_location(state, controllerLocation);
-  if (!keyboardSlot || !joystickSlot) {
-    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
-  }
-  return muse_on_capture_controller_neutral_state(
-      &keyboardSlot->decoder, &joystickSlot->decoder,
-      state->config.profile);
-}
-
-static void reconcile_tracked_neutral_entry(ListenerState *state) {
-  MuseOnNeutralEntryState trackedState;
-  DeviceSlot *slot;
-  uint32_t controllerLocation;
-  bool wasReleased;
-  bool isReleased;
-
-  if (!state ||
-      !validated_controller_location(state, &controllerLocation)) {
-    return;
-  }
-  wasReleased = all_inputs_released(state);
-  trackedState = tracked_controller_neutral_state(state);
-  isReleased = trackedState == MUSE_ON_NEUTRAL_ENTRY_RELEASED;
-  for (slot = state->slots; slot; slot = slot->next) {
-    if (!slot->removed && slot->locationID == controllerLocation) {
-      slot->neutralEntryReady = isReleased;
-    }
-  }
-  if (wasReleased != isReleased) {
-    printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
-           boolean_string(isReleased));
-  }
-}
 
 static bool active_filter_matches_current_keyboard(
     const ListenerState *state, uint32_t controllerLocation) {
@@ -594,7 +486,9 @@ static void emit_recovery_state(ListenerState *state) {
   }
   controllerConnected = topology.state == MUSE_ON_CONNECTION_SINGLE &&
                         validated_controller_location(state, &controllerLocation);
-  inputsReleased = controllerConnected && all_inputs_released(state);
+  inputsReleased =
+      controllerConnected &&
+      muse_on_listener_lifecycle_inputs_released(&state->lifecycle);
   filterVerified = muse_on_capture_is_verified(
       state->joystickOpen,
       controllerConnected && state->keyFilterApplied &&
@@ -605,7 +499,8 @@ static void emit_recovery_state(ListenerState *state) {
       .permission_granted = filter_permissions_ready(state),
       .controller_connected = controllerConnected,
       .multiple_controllers = topology.state == MUSE_ON_CONNECTION_MULTIPLE,
-      .codex_foreground = state->codexFrontmost,
+      .codex_foreground =
+          muse_on_listener_lifecycle_is_foreground(&state->lifecycle),
       .inputs_released = inputsReleased,
       .filter_verified = filterVerified,
       .keyboard_open = state->keyboardOpen,
@@ -615,7 +510,7 @@ static void emit_recovery_state(ListenerState *state) {
       &state->recoveryPolicy, monotonic_ns(), observation);
   outcome = muse_on_recovery_outcome_for(decision, observation);
   /* HID enumeration and filter proof may settle over several timer ticks.
-   * The safety latch already makes routing_is_enabled() return false. */
+   * The safety latch already makes external_route_gate() return false. */
   if (outcome == MUSE_ON_RECOVERY_OUTCOME_WAIT ||
       decision == MUSE_ON_RECOVERY_DONE) {
     return;
@@ -636,7 +531,8 @@ static void emit_recovery_state(ListenerState *state) {
          boolean_string(observation.permission_granted),
          boolean_string(observation.controller_connected),
          boolean_string(observation.multiple_controllers),
-         boolean_string(state->codexFrontmost),
+         boolean_string(
+             muse_on_listener_lifecycle_is_foreground(&state->lifecycle)),
          boolean_string(inputsReleased), boolean_string(filterVerified),
          boolean_string(state->keyboardOpen),
          muse_on_connection_state_string(topology.state), topology.location_id);
@@ -663,19 +559,6 @@ static bool slot_matches_active_filter(const ListenerState *state,
          keyboardSlot->registryID == registryID &&
          slot->locationID == (uint32_t)locationID &&
          (slot->kind != kInterfaceKeyboard || slot->registryID == registryID);
-}
-
-static void reset_slots(ListenerState *state, InterfaceKind kind,
-                        bool markRemoved) {
-  DeviceSlot *slot;
-
-  for (slot = state->slots; slot; slot = slot->next) {
-    if (kind != kInterfaceUnknown && slot->kind != kind) continue;
-    muse_on_decoder_init(&slot->decoder);
-    muse_on_action_router_init(&slot->router, state->config.profile);
-    slot->neutralEntryReady = false;
-    if (markRemoved) slot->removed = true;
-  }
 }
 
 static void emit_device_event(const char *event, const DeviceSlot *slot) {
@@ -806,7 +689,34 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
   }
 }
 
-static bool routing_is_enabled(ListenerState *state) {
+static void lifecycle_event(
+    void *context, const MuseOnListenerLifecycleEvent *event) {
+  ListenerState *state = context;
+  const DeviceSlot *slot = NULL;
+
+  if (!state || !event) return;
+  if (event->type == MUSE_ON_LISTENER_LIFECYCLE_EVENT_FOCUS_CHANGED) {
+    printf("{\"event\":\"focus_changed\",\"codexFrontmost\":%s}\n",
+           boolean_string(event->foreground));
+    return;
+  }
+  if (event->type == MUSE_ON_LISTENER_LIFECYCLE_EVENT_NEUTRAL_ENTRY) {
+    printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
+           boolean_string(event->inputs_released));
+    return;
+  }
+  if (event->type != MUSE_ON_LISTENER_LIFECYCLE_EVENT_ACTION) return;
+  if (event->interface_kind == MUSE_ON_INTERFACE_KEYBOARD_BOOT) {
+    slot = active_keyboard_slot_at_location(
+        state, event->controller_location_id);
+  } else if (event->interface_kind == MUSE_ON_INTERFACE_JOYSTICK) {
+    slot = active_joystick_slot_at_location(
+        state, event->controller_location_id);
+  }
+  if (slot) handle_action(state, slot, &event->action);
+}
+
+static bool external_route_gate(ListenerState *state) {
   bool frontmost;
   bool captured;
   uint32_t controllerLocation;
@@ -816,10 +726,6 @@ static bool routing_is_enabled(ListenerState *state) {
   if (state->config.mode == MUSE_ON_MODE_ACTIVE &&
       !filter_permissions_ready(state)) return false;
   if (!validated_controller_location(state, &controllerLocation)) return false;
-  for (DeviceSlot *slot = state->slots; slot; slot = slot->next) {
-    if (!slot->removed && slot->locationID == controllerLocation &&
-        !slot->neutralEntryReady) return false;
-  }
   frontmost = muse_on_codex_is_frontmost();
   captured = state->joystickOpen && state->keyFilterApplied &&
              muse_on_key_filter_is_active(state->keyFilter) &&
@@ -835,10 +741,8 @@ static void report_received(void *context, IOReturn result, void *sender,
   ManagerContext *managerContext = context;
   ListenerState *state;
   DeviceSlot *slot;
-  MuseOnInputObservation observation;
   MuseOnInterfaceKind interfaceKind;
   uint64_t receivedNs;
-  size_t index;
 
   if (!managerContext || !managerContext->state || !sender) return;
   state = managerContext->state;
@@ -877,24 +781,9 @@ static void report_received(void *context, IOReturn result, void *sender,
 
   interfaceKind = decoder_interface_kind(slot->kind);
   receivedNs = monotonic_ns();
-  if (!muse_on_capture_observe_report(
-          &slot->decoder, interfaceKind, state->config.profile,
-          (uint8_t)reportID, report, (size_t)reportLength, &observation)) {
-    return;
-  }
-  if (!state->codexFrontmost || !all_inputs_released(state)) {
-    reconcile_tracked_neutral_entry(state);
-    return;
-  }
-  if (!routing_is_enabled(state)) return;
-  for (index = 0; index < observation.event_count; index++) {
-    MuseOnActionEvent action;
-    if (muse_on_action_router_route(
-            &slot->router, observation.events[index].name, receivedNs,
-            &action)) {
-      handle_action(state, slot, &action);
-    }
-  }
+  (void)muse_on_listener_lifecycle_observe_report(
+      &state->lifecycle, interfaceKind, (uint8_t)reportID, report,
+      (size_t)reportLength, receivedNs, external_route_gate(state));
 }
 
 static const DeviceSlot *active_keyboard_slot_at_location(
@@ -917,6 +806,84 @@ static const DeviceSlot *active_joystick_slot_at_location(
         slot->locationID == locationID) return slot;
   }
   return NULL;
+}
+
+static void seed_lifecycle_current_reports(
+    ListenerState *state, const DeviceSlot *keyboardSlot,
+    const DeviceSlot *joystickSlot) {
+  uint8_t joystickReport[11];
+  uint8_t *keyboardReport;
+  size_t keyboardReportLength;
+  JoystickElementReaderContext reader;
+
+  if (!state || !keyboardSlot || !joystickSlot ||
+      keyboardSlot->reportCapacity <= 0) {
+    return;
+  }
+  keyboardReport =
+      calloc((size_t)keyboardSlot->reportCapacity, sizeof(*keyboardReport));
+  if (keyboardReport) {
+    keyboardReportLength = (size_t)keyboardSlot->reportCapacity;
+    if (read_keyboard_current_report(
+            (void *)keyboardSlot, 0, keyboardReport, &keyboardReportLength)) {
+      (void)muse_on_listener_lifecycle_observe_report(
+          &state->lifecycle, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0,
+          keyboardReport, keyboardReportLength, monotonic_ns(), false);
+    }
+    free(keyboardReport);
+  }
+  reader = (JoystickElementReaderContext){
+      .device = joystickSlot->device,
+      .elements = IOHIDDeviceCopyMatchingElements(
+          joystickSlot->device, NULL, kIOHIDOptionsTypeNone),
+      .profile = state->config.profile,
+  };
+  if (reader.elements &&
+      muse_on_capture_read_joystick_snapshot(
+          state->config.profile, read_joystick_current_element, &reader,
+          joystickReport)) {
+    (void)muse_on_listener_lifecycle_observe_report(
+        &state->lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, joystickReport,
+        sizeof(joystickReport), monotonic_ns(), false);
+  }
+  if (reader.elements) CFRelease(reader.elements);
+}
+
+static void sync_lifecycle_binding(ListenerState *state) {
+  const DeviceSlot *keyboardSlot;
+  const DeviceSlot *joystickSlot;
+  uint32_t controllerLocation;
+  bool alreadyBound;
+
+  if (!state ||
+      !validated_controller_location(state, &controllerLocation)) {
+    if (state) {
+      (void)muse_on_listener_lifecycle_unbind(&state->lifecycle);
+    }
+    return;
+  }
+  keyboardSlot =
+      active_keyboard_slot_at_location(state, controllerLocation);
+  joystickSlot =
+      active_joystick_slot_at_location(state, controllerLocation);
+  if (!keyboardSlot || !joystickSlot ||
+      (state->config.mode != MUSE_ON_MODE_DRY_RUN &&
+       (!state->keyFilterApplied ||
+        !muse_on_key_filter_is_active(state->keyFilter) ||
+        !active_filter_matches_current_keyboard(
+            state, controllerLocation)))) {
+    (void)muse_on_listener_lifecycle_unbind(&state->lifecycle);
+    return;
+  }
+  alreadyBound = muse_on_listener_lifecycle_is_bound_to(
+      &state->lifecycle, state->config.profile, controllerLocation);
+  if (!muse_on_listener_lifecycle_bind(
+          &state->lifecycle, state->config.profile, controllerLocation,
+          true, true) ||
+      alreadyBound) {
+    return;
+  }
+  seed_lifecycle_current_reports(state, keyboardSlot, joystickSlot);
 }
 
 static void activate_keyboard_filter(ListenerState *state, uint64_t nowNs,
@@ -981,9 +948,6 @@ static void device_added(void *context, IOReturn result, void *sender,
     slot->locationID = locationID;
     slot->registryID = registryID;
     slot->reportCapacity = (CFIndex)maxInputReportSize;
-    muse_on_decoder_init(&slot->decoder);
-    muse_on_action_router_init(&slot->router, state->config.profile);
-    slot->neutralEntryReady = false;
   } else {
     slot = calloc(1, sizeof(*slot));
     if (!slot) {
@@ -997,14 +961,10 @@ static void device_added(void *context, IOReturn result, void *sender,
     slot->usage = usage;
     slot->kind = kind;
     slot->reportCapacity = (CFIndex)maxInputReportSize;
-    muse_on_decoder_init(&slot->decoder);
-    muse_on_action_router_init(&slot->router, state->config.profile);
     slot->next = state->slots;
     state->slots = slot;
   }
 
-  reset_slots(state, kInterfaceUnknown, false);
-  probe_current_neutral_entries(state);
   emit_device_event("device_added", slot);
   emit_current_topology(state);
   if (state->config.mode != MUSE_ON_MODE_DRY_RUN) {
@@ -1017,7 +977,7 @@ static void device_added(void *context, IOReturn result, void *sender,
       activate_keyboard_filter(state, monotonic_ns(), "controller_connected");
     }
   }
-  emit_neutral_entry_if_connected(state);
+  sync_lifecycle_binding(state);
 }
 
 static void device_removed(void *context, IOReturn result, void *sender,
@@ -1045,7 +1005,7 @@ static void device_removed(void *context, IOReturn result, void *sender,
   if (!slot || slot->removed || slot->kind != managerContext->kind) return;
 
   slot->removed = true;
-  reset_slots(state, kInterfaceUnknown, false);
+  sync_lifecycle_binding(state);
   emit_device_event("device_removed", slot);
   emit_current_topology(state);
   if (state->config.mode != MUSE_ON_MODE_DRY_RUN && state->keyFilterApplied) {
@@ -1085,7 +1045,7 @@ static bool restore_keyboard_filter(ListenerState *state, uint64_t nowNs,
   state->keyFilterApplied = false;
   if (firstAttempt) {
     force_release_synthetic_hold(state, reason);
-    reset_slots(state, kInterfaceUnknown, false);
+    (void)muse_on_listener_lifecycle_unbind(&state->lifecycle);
     state->filterRetryAfterNs = 0;
   }
   restoreNeeded = muse_on_key_filter_needs_restore(state->keyFilter);
@@ -1168,6 +1128,7 @@ static void activate_keyboard_filter(ListenerState *state,
   }
   state->keyFilterApplied = muse_on_key_filter_is_active(state->keyFilter);
   state->filterRetryAfterNs = 0;
+  sync_lifecycle_binding(state);
   emit_capture_state(state, state->keyFilterApplied ? "filter_applied"
                                                     : "filter_waiting",
                      reason);
@@ -1181,22 +1142,10 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return;
   refresh_permission_state(state, nowNs);
   frontmost = muse_on_codex_is_frontmost();
-  if (!state->focusKnown || frontmost != state->codexFrontmost) {
-    DeviceSlot *slot;
-
-    state->focusKnown = true;
-    state->codexFrontmost = frontmost;
-    printf("{\"event\":\"focus_changed\",\"codexFrontmost\":%s}\n",
-           boolean_string(frontmost));
-    if (!frontmost) {
-      force_release_synthetic_hold(state, "codex_focus_lost");
-    }
-    for (slot = state->slots; slot; slot = slot->next) {
-      if (slot->removed) continue;
-      muse_on_capture_focus_changed(
-          &slot->decoder, &slot->router, state->config.profile,
-          frontmost, &slot->neutralEntryReady);
-    }
+  if (muse_on_listener_lifecycle_focus_changed(
+          &state->lifecycle, frontmost) &&
+      !frontmost) {
+    force_release_synthetic_hold(state, "codex_focus_lost");
   }
 
   wantFilter = muse_on_should_filter_keyboard(state->config.mode) &&
@@ -1214,7 +1163,6 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
 
 static void action_timer(CFRunLoopTimerRef timer, void *context) {
   ListenerState *state = context;
-  DeviceSlot *slot;
   uint64_t nowNs;
 
   (void)timer;
@@ -1223,15 +1171,8 @@ static void action_timer(CFRunLoopTimerRef timer, void *context) {
   update_focus_and_filter(state, nowNs);
   if (state->config.safety_latched) emit_recovery_state(state);
 
-  if (routing_is_enabled(state)) {
-    for (slot = state->slots; slot; slot = slot->next) {
-      MuseOnActionEvent action;
-      if (!slot->removed &&
-          muse_on_action_router_tick(&slot->router, nowNs, &action)) {
-        handle_action(state, slot, &action);
-      }
-    }
-  }
+  muse_on_listener_lifecycle_tick(
+      &state->lifecycle, nowNs, external_route_gate(state));
   if ((stopRequested || state->releaseFailed) && state->runLoop) {
     CFRunLoopStop(state->runLoop);
   }
@@ -1353,6 +1294,7 @@ int main(int argc, char *argv[]) {
             argv[0]);
     return 64;
   }
+  muse_on_listener_lifecycle_init(&state.lifecycle, lifecycle_event, &state);
   muse_on_key_filter_restore_policy_init(&state.filterRestorePolicy);
 
   setvbuf(stdout, NULL, _IONBF, 0);

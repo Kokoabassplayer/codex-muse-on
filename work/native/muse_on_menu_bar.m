@@ -1355,8 +1355,17 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     muse_on_diagnostics_record_listener_ready(&_diagnostics);
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"focus_changed"]) {
-    self.codexForeground = [event[@"codexFrontmost"] boolValue];
-    if (!self.codexForeground) [self requireNeutralEntry];
+    BOOL codexForeground;
+    if (!muse_on_protocol_read_json_boolean(
+            event, @"codexFrontmost", &codexForeground) ||
+        !muse_on_topology_host_apply_focus_changed(
+            &_topologyHostState, self.listenerTaskGeneration,
+            codexForeground)) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
+    self.codexForeground = codexForeground;
+    [self syncTopologyHostState];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
     if (![self applyListenerFilterVerificationFromEvent:event]) return;

@@ -1,282 +1,184 @@
-#include "../muse_on_capture.h"
+#include "../muse_on_listener_lifecycle.h"
 #include "../muse_on_topology.h"
 
 #include <assert.h>
 
-typedef struct {
-  MuseOnDecoder keyboard_decoder;
-  MuseOnDecoder joystick_decoder;
-  MuseOnActionRouter keyboard_router;
-  MuseOnActionRouter joystick_router;
-  bool keyboard_ready;
-  bool joystick_ready;
-} FocusInputs;
+enum { kGeneration = 1 };
+static const uint32_t kControllerLocation = UINT32_C(0x110000);
 
 typedef struct {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
+  bool foreground;
+  unsigned int focus_count;
+  unsigned int neutral_count;
   unsigned int begin_count;
   unsigned int end_count;
-} ActionLog;
+} TraceSink;
 
-static const uint8_t kNeutralKeyboard[8] = {0};
-static const uint8_t kNeutralJoystick[11] = {
-    0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
-    0x80, 0xff, 0xff, 0x00, 0x00,
-};
-
-static bool unavailable_current_report(
-    void *context, uint8_t report_id, uint8_t *report,
-    size_t *report_length) {
-  (void)context;
-  (void)report_id;
-  (void)report;
-  (void)report_length;
-  return false;
-}
-
-static void init_inputs(FocusInputs *inputs) {
-  MuseOnInputObservation observation;
-
-  muse_on_decoder_init(&inputs->keyboard_decoder);
-  muse_on_decoder_init(&inputs->joystick_decoder);
-  muse_on_action_router_init(
-      &inputs->keyboard_router, MUSE_ON_PROFILE_PEDAL);
-  muse_on_action_router_init(
-      &inputs->joystick_router, MUSE_ON_PROFILE_PEDAL);
-  assert(muse_on_capture_observe_report(
-      &inputs->keyboard_decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT,
-      MUSE_ON_PROFILE_PEDAL, 0, kNeutralKeyboard, sizeof(kNeutralKeyboard),
-      &observation));
-  assert(observation.neutral_entry_state == MUSE_ON_NEUTRAL_ENTRY_RELEASED);
-  assert(muse_on_capture_observe_report(
-      &inputs->joystick_decoder, MUSE_ON_INTERFACE_JOYSTICK,
-      MUSE_ON_PROFILE_PEDAL, 1, kNeutralJoystick, sizeof(kNeutralJoystick),
-      &observation));
-  assert(observation.neutral_entry_state == MUSE_ON_NEUTRAL_ENTRY_RELEASED);
-  inputs->keyboard_ready = true;
-  inputs->joystick_ready = true;
-}
-
-static bool inputs_ready(const FocusInputs *inputs) {
-  return inputs->keyboard_ready && inputs->joystick_ready;
-}
-
-static void record_action(ActionLog *log, const MuseOnActionEvent *action) {
-  assert(action->id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
-  if (action->phase == MUSE_ON_ACTION_BEGIN) {
-    log->begin_count++;
-  } else {
-    assert(action->phase == MUSE_ON_ACTION_END);
-    log->end_count++;
-  }
-}
-
-static void process_joystick_report(
-    FocusInputs *inputs, const uint8_t *report, bool foreground,
-    uint64_t timestamp_ns, ActionLog *log) {
-  MuseOnInputObservation observation;
-  bool ready_before = inputs_ready(inputs);
-
-  assert(muse_on_capture_observe_report(
-      &inputs->joystick_decoder, MUSE_ON_INTERFACE_JOYSTICK,
-      MUSE_ON_PROFILE_PEDAL, 1, report, 11, &observation));
-  if (!foreground || !ready_before) {
-    bool released =
-        muse_on_capture_controller_neutral_state(
-            &inputs->keyboard_decoder, &inputs->joystick_decoder,
-            MUSE_ON_PROFILE_PEDAL) == MUSE_ON_NEUTRAL_ENTRY_RELEASED;
-    inputs->keyboard_ready = released;
-    inputs->joystick_ready = released;
-    return;
-  }
-  for (size_t index = 0; index < observation.event_count; index++) {
-    MuseOnActionEvent action;
-    if (muse_on_action_router_route(
-            &inputs->joystick_router, observation.events[index].name,
-            timestamp_ns, &action)) {
-      record_action(log, &action);
-    }
-  }
-}
-
-static void tick_joystick(
-    FocusInputs *inputs, uint64_t timestamp_ns, ActionLog *log) {
-  MuseOnActionEvent action;
-
-  if (muse_on_action_router_tick(
-          &inputs->joystick_router, timestamp_ns, &action)) {
-    record_action(log, &action);
-  }
-}
-
-static MuseOnTopologyCoordinatorInputs coordinator_inputs(bool foreground) {
+static MuseOnTopologyCoordinatorInputs coordinator_inputs(
+    const TraceSink *sink) {
   return (MuseOnTopologyCoordinatorInputs){
       .permission_granted = true,
       .session_available = true,
-      .codex_foreground = foreground,
+      .codex_foreground = sink->foreground,
       .cleanup_verified = true,
   };
 }
 
-static void apply_coordinator(
-    MuseOnTopologyHostState *host, MuseOnState *coordinator,
-    MuseOnCommand command, bool foreground) {
+static void apply_coordinator(TraceSink *sink, MuseOnCommand command) {
   (void)muse_on_topology_host_apply_coordinator(
-      host, coordinator, command, MUSE_ON_SAFETY_FAILURE_NONE,
-      coordinator_inputs(foreground));
+      &sink->host, &sink->coordinator, command,
+      MUSE_ON_SAFETY_FAILURE_NONE, coordinator_inputs(sink));
 }
 
-static void test_focus_epoch_consumes_release_before_dispatch(void) {
-  FocusInputs inputs;
-  MuseOnTopologyHostState host;
-  MuseOnState coordinator;
-  ActionLog log = {0};
-  uint8_t pedal_down[11];
-  uint8_t current_report[8] = {0};
-  const uint64_t down_ns = UINT64_C(1000000000);
+static void lifecycle_event(
+    void *context, const MuseOnListenerLifecycleEvent *event) {
+  TraceSink *sink = context;
 
-  init_inputs(&inputs);
-  muse_on_topology_host_init(&host);
-  muse_on_state_init(&coordinator);
-  muse_on_topology_host_begin(&host, 1, false);
+  if (event->type == MUSE_ON_LISTENER_LIFECYCLE_EVENT_FOCUS_CHANGED) {
+    sink->focus_count++;
+    sink->foreground = event->foreground;
+    assert(muse_on_topology_host_apply_focus_changed(
+        &sink->host, kGeneration, event->foreground));
+    apply_coordinator(sink, MUSE_ON_COMMAND_NONE);
+    return;
+  }
+  if (event->type == MUSE_ON_LISTENER_LIFECYCLE_EVENT_NEUTRAL_ENTRY) {
+    sink->neutral_count++;
+    assert(muse_on_topology_host_apply_neutral_entry(
+        &sink->host, kGeneration, event->inputs_released));
+    apply_coordinator(sink, MUSE_ON_COMMAND_NONE);
+    return;
+  }
+  assert(event->type == MUSE_ON_LISTENER_LIFECYCLE_EVENT_ACTION);
+  assert(event->action.id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
+  if (event->action.phase == MUSE_ON_ACTION_BEGIN) {
+    sink->begin_count++;
+  } else {
+    assert(event->action.phase == MUSE_ON_ACTION_END);
+    sink->end_count++;
+  }
+}
+
+static void initialize_trace(
+    TraceSink *sink, MuseOnListenerLifecycle *lifecycle) {
+  static const uint8_t keyboard_neutral[8] = {0};
+  static const uint8_t joystick_neutral[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x00, 0x00,
+  };
+
+  muse_on_topology_host_init(&sink->host);
+  muse_on_state_init(&sink->coordinator);
+  muse_on_topology_host_begin(&sink->host, kGeneration, false);
   assert(muse_on_topology_host_apply_topology(
-             &host, 1,
+             &sink->host, kGeneration,
              (MuseOnConnectionSnapshot){
-                 MUSE_ON_CONNECTION_SINGLE, UINT32_C(0x110000)}) ==
+                 MUSE_ON_CONNECTION_SINGLE, kControllerLocation}) ==
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
-  assert(muse_on_topology_host_apply_filter_verification(&host, 1, true));
-  assert(muse_on_topology_host_apply_neutral_entry(&host, 1, true));
-  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE, true);
-  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
-  assert(coordinator.effects.request_dispatch);
-
-  muse_on_capture_focus_changed(
-      &inputs.keyboard_decoder, &inputs.keyboard_router,
-      MUSE_ON_PROFILE_PEDAL, false, &inputs.keyboard_ready);
-  muse_on_capture_focus_changed(
-      &inputs.joystick_decoder, &inputs.joystick_router,
-      MUSE_ON_PROFILE_PEDAL, false, &inputs.joystick_ready);
-  assert(inputs.keyboard_decoder.keyboard_usages_seen);
-  assert(inputs.joystick_decoder.joystick_report_seen);
-  assert(!inputs_ready(&inputs));
-  muse_on_topology_host_require_neutral_entry(&host);
-  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE, false);
-  assert(host.filter_verified);
-  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
-  assert(coordinator.inactive_reason ==
-         MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND);
-  assert(!coordinator.effects.request_dispatch);
-
-  muse_on_capture_focus_changed(
-      &inputs.keyboard_decoder, &inputs.keyboard_router,
-      MUSE_ON_PROFILE_PEDAL, true, &inputs.keyboard_ready);
-  muse_on_capture_focus_changed(
-      &inputs.joystick_decoder, &inputs.joystick_router,
-      MUSE_ON_PROFILE_PEDAL, true, &inputs.joystick_ready);
-  assert(muse_on_capture_probe_neutral_entry(
-             &inputs.keyboard_decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT,
-             MUSE_ON_PROFILE_PEDAL, 0, current_report,
-             sizeof(current_report), unavailable_current_report, NULL) ==
-         MUSE_ON_NEUTRAL_ENTRY_UNKNOWN);
-  assert(muse_on_capture_controller_neutral_state(
-             &inputs.keyboard_decoder, &inputs.joystick_decoder,
-             MUSE_ON_PROFILE_PEDAL) == MUSE_ON_NEUTRAL_ENTRY_RELEASED);
-  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE, true);
-  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
-  assert(coordinator.inactive_reason ==
-         MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
-  assert(!coordinator.effects.request_dispatch);
-
-  for (size_t index = 0; index < sizeof(pedal_down); index++) {
-    pedal_down[index] = kNeutralJoystick[index];
-  }
-  pedal_down[9] = 0x10;
-  process_joystick_report(&inputs, pedal_down, true, down_ns, &log);
-  assert(!inputs_ready(&inputs));
-  assert(muse_on_topology_host_apply_neutral_entry(&host, 1, false));
-  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE, true);
-  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
-  assert(log.begin_count == 0);
-  assert(log.end_count == 0);
-
-  process_joystick_report(
-      &inputs, kNeutralJoystick, true,
-      down_ns + MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  assert(inputs_ready(&inputs));
-  assert(muse_on_topology_host_apply_neutral_entry(&host, 1, true));
-  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE, true);
-  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
-  assert(coordinator.effects.request_dispatch);
-  assert(log.begin_count == 0);
-  assert(log.end_count == 0);
-
-  process_joystick_report(
-      &inputs, pedal_down, true,
-      down_ns + 2 * MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  tick_joystick(
-      &inputs, down_ns + 3 * MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  assert(log.begin_count == 1);
-  assert(log.end_count == 0);
-  process_joystick_report(
-      &inputs, kNeutralJoystick, true,
-      down_ns + 4 * MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  tick_joystick(
-      &inputs, down_ns + 5 * MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  assert(log.begin_count == 1);
-  assert(log.end_count == 1);
+  assert(muse_on_topology_host_apply_filter_verification(
+      &sink->host, kGeneration, true));
+  muse_on_listener_lifecycle_init(lifecycle, lifecycle_event, sink);
+  assert(muse_on_listener_lifecycle_bind(
+      lifecycle, MUSE_ON_PROFILE_PEDAL, kControllerLocation, true, true));
+  assert(muse_on_listener_lifecycle_focus_changed(lifecycle, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      lifecycle, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0, keyboard_neutral,
+      sizeof(keyboard_neutral), UINT64_C(1000000000), false));
+  assert(muse_on_listener_lifecycle_observe_report(
+      lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, joystick_neutral,
+      sizeof(joystick_neutral), UINT64_C(1000000001), false));
+  apply_coordinator(sink, MUSE_ON_COMMAND_ENABLE);
+  assert(sink->coordinator.status == MUSE_ON_STATUS_ACTIVE);
 }
 
-static void test_control_held_across_focus_return_waits_for_release(void) {
-  FocusInputs inputs;
-  MuseOnDecoder unknown_keyboard;
-  ActionLog log = {0};
-  uint8_t pedal_down[11];
-  const uint64_t down_ns = UINT64_C(2000000000);
+static void test_captured_focus_epoch_trace(void) {
+  static const uint8_t pedal_down[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x10, 0x00,
+  };
+  static const uint8_t pedal_release[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x00, 0x00,
+  };
+  TraceSink sink = {0};
+  MuseOnListenerLifecycle lifecycle;
+  const uint64_t start_ns = UINT64_C(2000000000);
+  unsigned int neutral_before;
 
-  init_inputs(&inputs);
-  muse_on_decoder_init(&unknown_keyboard);
-  assert(muse_on_capture_controller_neutral_state(
-             &unknown_keyboard, &inputs.joystick_decoder,
-             MUSE_ON_PROFILE_PEDAL) == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN);
-  for (size_t index = 0; index < sizeof(pedal_down); index++) {
-    pedal_down[index] = kNeutralJoystick[index];
-  }
-  pedal_down[9] = 0x10;
+  initialize_trace(&sink, &lifecycle);
+  assert(muse_on_listener_lifecycle_focus_changed(&lifecycle, false));
+  assert(!sink.host.inputs_released);
+  assert(sink.host.filter_verified);
+  assert(sink.coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(sink.coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND);
+  assert(muse_on_listener_lifecycle_focus_changed(&lifecycle, true));
+  assert(!sink.host.inputs_released);
+  assert(sink.coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(sink.coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
 
-  muse_on_capture_focus_changed(
-      &inputs.keyboard_decoder, &inputs.keyboard_router,
-      MUSE_ON_PROFILE_PEDAL, false, &inputs.keyboard_ready);
-  muse_on_capture_focus_changed(
-      &inputs.joystick_decoder, &inputs.joystick_router,
-      MUSE_ON_PROFILE_PEDAL, false, &inputs.joystick_ready);
-  process_joystick_report(
-      &inputs, pedal_down, false, down_ns, &log);
-  assert(log.begin_count == 0);
-  assert(log.end_count == 0);
-  muse_on_capture_focus_changed(
-      &inputs.keyboard_decoder, &inputs.keyboard_router,
-      MUSE_ON_PROFILE_PEDAL, true, &inputs.keyboard_ready);
-  muse_on_capture_focus_changed(
-      &inputs.joystick_decoder, &inputs.joystick_router,
-      MUSE_ON_PROFILE_PEDAL, true, &inputs.joystick_ready);
-  assert(muse_on_capture_controller_neutral_state(
-             &inputs.keyboard_decoder, &inputs.joystick_decoder,
-             MUSE_ON_PROFILE_PEDAL) == MUSE_ON_NEUTRAL_ENTRY_HELD);
-  assert(!inputs_ready(&inputs));
-  tick_joystick(
-      &inputs, down_ns + 2 * MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  assert(log.begin_count == 0);
-  assert(log.end_count == 0);
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns, true));
+  assert(sink.begin_count == 0 && sink.end_count == 0);
+  neutral_before = sink.neutral_count;
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + MUSE_ON_HOLD_DEBOUNCE_NS, true));
+  assert(sink.neutral_count == neutral_before + 1);
+  assert(sink.host.inputs_released);
+  assert(sink.coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(sink.begin_count == 0 && sink.end_count == 0);
 
-  process_joystick_report(
-      &inputs, kNeutralJoystick, true,
-      down_ns + 3 * MUSE_ON_HOLD_DEBOUNCE_NS, &log);
-  assert(inputs_ready(&inputs));
-  assert(log.begin_count == 0);
-  assert(log.end_count == 0);
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns + 2 * MUSE_ON_HOLD_DEBOUNCE_NS, true));
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + 3 * MUSE_ON_HOLD_DEBOUNCE_NS, true);
+  assert(sink.begin_count == 1 && sink.end_count == 0);
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + 4 * MUSE_ON_HOLD_DEBOUNCE_NS, true));
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + 5 * MUSE_ON_HOLD_DEBOUNCE_NS, true);
+  assert(sink.begin_count == 1 && sink.end_count == 1);
+}
+
+static void test_held_across_focus_return_is_blocked(void) {
+  static const uint8_t pedal_down[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x10, 0x00,
+  };
+  static const uint8_t pedal_release[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x00, 0x00,
+  };
+  TraceSink sink = {0};
+  MuseOnListenerLifecycle lifecycle;
+  const uint64_t start_ns = UINT64_C(3000000000);
+
+  initialize_trace(&sink, &lifecycle);
+  assert(muse_on_listener_lifecycle_focus_changed(&lifecycle, false));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns, true));
+  assert(muse_on_listener_lifecycle_focus_changed(&lifecycle, true));
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + MUSE_ON_HOLD_DEBOUNCE_NS, true);
+  assert(sink.begin_count == 0 && sink.end_count == 0);
+  assert(!sink.host.inputs_released);
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + 2 * MUSE_ON_HOLD_DEBOUNCE_NS, true));
+  assert(sink.host.inputs_released);
+  assert(sink.begin_count == 0 && sink.end_count == 0);
 }
 
 int main(void) {
-  test_focus_epoch_consumes_release_before_dispatch();
-  test_control_held_across_focus_return_waits_for_release();
+  test_captured_focus_epoch_trace();
+  test_held_across_focus_return_is_blocked();
   return 0;
 }

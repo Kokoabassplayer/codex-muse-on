@@ -84,37 +84,6 @@ bool muse_on_capture_observe_report(
   return observation->neutral_entry_state != MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
 }
 
-void muse_on_capture_focus_changed(
-    MuseOnDecoder *decoder, MuseOnActionRouter *router,
-    MuseOnProfile profile, bool codex_foreground,
-    bool *neutral_entry_ready) {
-  if (!decoder || !router || !neutral_entry_ready) return;
-  if (codex_foreground) return;
-  muse_on_action_router_init(router, profile);
-  *neutral_entry_ready = false;
-}
-
-MuseOnNeutralEntryState muse_on_capture_controller_neutral_state(
-    const MuseOnDecoder *keyboard_decoder,
-    const MuseOnDecoder *joystick_decoder, MuseOnProfile profile) {
-  MuseOnNeutralEntryState keyboard_state =
-      muse_on_selected_profile_neutral_state(
-          keyboard_decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, profile);
-  MuseOnNeutralEntryState joystick_state =
-      muse_on_selected_profile_neutral_state(
-          joystick_decoder, MUSE_ON_INTERFACE_JOYSTICK, profile);
-
-  if (keyboard_state == MUSE_ON_NEUTRAL_ENTRY_HELD ||
-      joystick_state == MUSE_ON_NEUTRAL_ENTRY_HELD) {
-    return MUSE_ON_NEUTRAL_ENTRY_HELD;
-  }
-  if (keyboard_state == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN ||
-      joystick_state == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN) {
-    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
-  }
-  return MUSE_ON_NEUTRAL_ENTRY_RELEASED;
-}
-
 MuseOnNeutralEntryState muse_on_capture_probe_neutral_entry(
     MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
     MuseOnProfile profile, uint8_t report_id, uint8_t *report,
@@ -136,11 +105,10 @@ MuseOnNeutralEntryState muse_on_capture_probe_neutral_entry(
   return observation.neutral_entry_state;
 }
 
-MuseOnNeutralEntryState muse_on_capture_probe_joystick_elements(
-    MuseOnDecoder *decoder, MuseOnProfile profile,
-    MuseOnCurrentJoystickElementReader reader, void *context) {
-  MuseOnInputObservation observation;
-  uint8_t report[11] = {
+bool muse_on_capture_read_joystick_snapshot(
+    MuseOnProfile profile, MuseOnCurrentJoystickElementReader reader,
+    void *context, uint8_t report[11]) {
+  static const uint8_t neutral_report[11] = {
       0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
       0x80, 0xff, 0xff, 0x00, 0x00,
   };
@@ -148,8 +116,11 @@ MuseOnNeutralEntryState muse_on_capture_probe_joystick_elements(
   size_t index;
 
   if (!muse_on_capture_joystick_snapshot_capacity(
-          profile, 6, &expected_count) || !decoder || !reader) {
-    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+          profile, 6, &expected_count) || !reader || !report) {
+    return false;
+  }
+  for (index = 0; index < sizeof(neutral_report); index++) {
+    report[index] = neutral_report[index];
   }
   for (index = 0; index < expected_count; index++) {
     MuseOnJoystickElementValue value;
@@ -163,7 +134,7 @@ MuseOnNeutralEntryState muse_on_capture_probe_joystick_elements(
         element == MUSE_ON_JOYSTICK_ELEMENT_HAT ? 359 : 1;
 
     if (!reader(context, element, &value)) {
-      return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+      return false;
     }
     valid_value = element == MUSE_ON_JOYSTICK_ELEMENT_HAT
         ? ((value.value >= 0 && value.value <= expected_maximum) ||
@@ -176,7 +147,7 @@ MuseOnNeutralEntryState muse_on_capture_probe_joystick_elements(
         value.usage_page != expected_usage_page || value.usage != expected_usage ||
         value.logical_minimum != 0 || value.logical_maximum != expected_maximum ||
         !valid_value) {
-      return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+      return false;
     }
     if (element == MUSE_ON_JOYSTICK_ELEMENT_HAT) {
       report[7] = (uint8_t)((uint16_t)value.value & 0xffU);
@@ -184,6 +155,20 @@ MuseOnNeutralEntryState muse_on_capture_probe_joystick_elements(
     } else if (value.value != 0) {
       report[9] |= (uint8_t)(1U << (element - 1));
     }
+  }
+  return true;
+}
+
+MuseOnNeutralEntryState muse_on_capture_probe_joystick_elements(
+    MuseOnDecoder *decoder, MuseOnProfile profile,
+    MuseOnCurrentJoystickElementReader reader, void *context) {
+  MuseOnInputObservation observation;
+  uint8_t report[11];
+
+  if (!decoder ||
+      !muse_on_capture_read_joystick_snapshot(
+          profile, reader, context, report)) {
+    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
   }
 
   if (!muse_on_capture_observe_report(
