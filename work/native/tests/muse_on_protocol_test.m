@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdint.h>
 
+#import "../muse_on_state_coordinator.h"
 #import "../muse_on_protocol.h"
 
 static NSDictionary *json_object(NSString *literal) {
@@ -44,6 +45,21 @@ static void assert_uint32(NSString *literal, BOOL valid, uint32_t expected) {
   if (valid) assert(value == expected);
 }
 
+static void assert_recovery_tuple(
+    NSString *literal, BOOL valid, MuseOnRecoveryOutcome expectedOutcome,
+    MuseOnSafetyFailure expectedFailure) {
+  MuseOnRecoveryOutcome outcome = MUSE_ON_RECOVERY_OUTCOME_WAIT;
+  MuseOnSafetyFailure failure = MUSE_ON_SAFETY_FAILURE_UNCLEAN_EXIT;
+  BOOL result = muse_on_protocol_read_recovery_tuple(
+      json_object(literal), &outcome, &failure);
+
+  assert(result == valid);
+  if (valid) {
+    assert(outcome == expectedOutcome);
+    assert(failure == expectedFailure);
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     assert_boolean(@"{\"proof\":true}", YES, YES);
@@ -80,6 +96,39 @@ int main(void) {
     uint32_t nanValue = 0;
     assert(!muse_on_protocol_read_json_uint32(
         @{@"proof": @(NAN)}, @"proof", &nanValue));
+
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"success\",\"recoveryFailure\":\"none\"}",
+        YES, MUSE_ON_RECOVERY_OUTCOME_SUCCESS, MUSE_ON_SAFETY_FAILURE_NONE);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"success\","
+         "\"recoveryFailure\":\"hold_release_failed\"}",
+        NO, MUSE_ON_RECOVERY_OUTCOME_WAIT, MUSE_ON_SAFETY_FAILURE_NONE);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"neutral_entry_pending\","
+         "\"recoveryFailure\":\"none\"}",
+        YES, MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING,
+        MUSE_ON_SAFETY_FAILURE_NONE);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"neutral_entry_pending\","
+         "\"recoveryFailure\":\"pass_through_restoration_failed\"}",
+        NO, MUSE_ON_RECOVERY_OUTCOME_WAIT, MUSE_ON_SAFETY_FAILURE_NONE);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"failure\","
+         "\"recoveryFailure\":\"device_state_uncertain\"}",
+        YES, MUSE_ON_RECOVERY_OUTCOME_FAILURE,
+        MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"failure\",\"recoveryFailure\":\"none\"}",
+        NO, MUSE_ON_RECOVERY_OUTCOME_WAIT, MUSE_ON_SAFETY_FAILURE_NONE);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"failure\","
+         "\"recoveryFailure\":\"hold_release_failed\"}",
+        NO, MUSE_ON_RECOVERY_OUTCOME_WAIT, MUSE_ON_SAFETY_FAILURE_NONE);
+    assert_recovery_tuple(
+        @"{\"recoveryOutcome\":\"failure\","
+         "\"recoveryFailure\":\"future_unknown_failure\"}",
+        NO, MUSE_ON_RECOVERY_OUTCOME_WAIT, MUSE_ON_SAFETY_FAILURE_NONE);
   }
   return 0;
 }

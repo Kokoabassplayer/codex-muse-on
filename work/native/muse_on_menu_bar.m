@@ -1417,20 +1417,16 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   } else if ([name isEqualToString:@"recovery_state"]) {
     MuseOnConnectionSnapshot recoveryTopology;
     MuseOnRecoveryOutcome recoveryOutcomeValue;
+    MuseOnSafetyFailure recoveryFailureValue;
     MuseOnTopologyEventResult recoveryResult;
-    NSString *recoveryOutcome;
-    NSString *recoveryFailure;
     BOOL inputsReleased;
     BOOL permissionGranted;
     BOOL filterVerified;
     BOOL codexForeground;
-    BOOL recoverySucceeded;
     BOOL neutralEntryPending;
     BOOL recoveryFailed;
-    if (!muse_on_protocol_read_json_string(
-            event, @"recoveryOutcome", &recoveryOutcome) ||
-        !muse_on_protocol_read_json_string(
-            event, @"recoveryFailure", &recoveryFailure) ||
+    if (!muse_on_protocol_read_recovery_tuple(
+            event, &recoveryOutcomeValue, &recoveryFailureValue) ||
         !muse_on_protocol_read_json_boolean(
             event, @"inputsReleased", &inputsReleased) ||
         !muse_on_protocol_read_json_boolean(
@@ -1442,18 +1438,11 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       [self recordListenerProtocolFailure];
       return;
     }
-    recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
     neutralEntryPending =
-        [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
-    recoveryFailed = [recoveryOutcome isEqualToString:@"failure"];
-    if (!recoverySucceeded && !neutralEntryPending && !recoveryFailed) {
-      [self recordListenerProtocolFailure];
-      return;
-    }
-    recoveryOutcomeValue = recoverySucceeded
-        ? MUSE_ON_RECOVERY_OUTCOME_SUCCESS
-        : (neutralEntryPending ? MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING
-                               : MUSE_ON_RECOVERY_OUTCOME_FAILURE);
+        recoveryOutcomeValue ==
+        MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING;
+    recoveryFailed =
+        recoveryOutcomeValue == MUSE_ON_RECOVERY_OUTCOME_FAILURE;
     if (![self listenerTopologySnapshotFromEvent:event
                                            snapshot:&recoveryTopology]) {
       [self recordListenerProtocolFailure];
@@ -1477,12 +1466,10 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     if (self.permissionGranted) self.retryPermissionPending = NO;
     self.codexForeground = codexForeground;
     if (recoveryFailed) {
-      MuseOnSafetyFailure reportedFailure = [self safetyFailureFromString:
-          recoveryFailure];
       self.listenerRecoveryValidated = NO;
       self.listenerSawSafetyLatch = YES;
       if (self.listenerSafetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
-        self.listenerSafetyFailure = reportedFailure;
+        self.listenerSafetyFailure = recoveryFailureValue;
       }
       [self recordSafetyFailure:self.listenerSafetyFailure];
       [self applyCoordinatorCommand:MUSE_ON_COMMAND_NONE
