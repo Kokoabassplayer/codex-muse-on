@@ -17,7 +17,7 @@ A persisted user request to become Disabled while safety cleanup is not yet veri
 _Avoid_: Disabled, automatic resume
 
 **Active**:
-The temporary state in which shortcut dispatch is permitted because the exact Muse-On is connected, required permissions are valid, verified controller filtering/capture is current, Neutral Entry is satisfied, and Codex is foreground.
+The temporary state in which shortcut dispatch is permitted because the exact Muse-On is connected, required permissions are valid, the current normal listener generation has live verified controller filtering/capture, Neutral Entry is satisfied, and Codex is foreground. Recovery proof never satisfies this gate.
 _Avoid_: Enabled, ready
 
 **Foreground Only**:
@@ -37,8 +37,12 @@ An Inactive reason shown when every other Active prerequisite, including verifie
 _Avoid_: Retry required, stuck input
 
 **Verifying control**:
-An Inactive reason shown after all higher-priority ordinary gates pass while the current listener generation has not verified controller filtering/capture. It clears only after that generation reports verified filtering/capture; filter restoration, topology change, or a new generation clears the verification.
+An Inactive reason shown after all higher-priority ordinary gates pass while the current normal listener generation has not provided live verified controller filtering/capture. It clears only after that generation reports verified filtering/capture; filter restoration, topology change, or a new generation clears the live proof.
 _Avoid_: Active before capture, Release controls before filtering
+
+**Recovery filter proof**:
+Terminal evidence that a recovery listener generation verified filtering/capture before mandatory Pass-through restoration. It may survive that generation's verified cleanup only to let Retry clear a Safety latch; it never permits Active or dispatch, and a new listener generation clears it.
+_Avoid_: Live filter proof, dispatch permission, skip normal revalidation
 
 **Inactive**:
 An Enabled state in which shortcut dispatch is blocked because at least one Active prerequisite is unmet. The menu presents one specific reason.
@@ -65,7 +69,7 @@ A prior process end that did not verify Safe Quit, including a crash, Force Quit
 _Avoid_: Normal Quit, automatic resume
 
 **Retry**:
-An explicit request to revalidate device, permission, filter, and hold safety after a Safety latch. Retry may make the installation's one missing-permission request from the responsible Codex Muse-On app identity if First Enable did not already make it; later retries only recheck and guide to Settings. Login, relaunch, and routine gate changes never prompt.
+An explicit request to revalidate device, permission, filter, and hold safety after a Safety latch. Clean recovery completion may use Recovery filter proof to clear the latch, but the result remains Inactive until a fresh normal listener generation independently proves topology, live filtering/capture, and Neutral Entry. Retry may make the installation's one missing-permission request from the responsible Codex Muse-On app identity if First Enable did not already make it; later retries only recheck and guide to Settings. Login, relaunch, and routine gate changes never prompt.
 _Avoid_: Enable, reconnect, automatic permission prompt
 
 **Permission Required**:

@@ -111,6 +111,7 @@ typedef struct {
   bool session_available;   /* session awake, unlocked, active */
   bool codex_foreground;    /* com.openai.codex frontmost */
   bool filter_verified;     /* current controller filtering/capture verified */
+  bool recovery_filter_verified; /* terminal recovery-generation proof */
   bool inputs_released;     /* Neutral Entry: selected-profile inputs freed */
 } MuseOnPrerequisites;
 

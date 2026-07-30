@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "muse_on_platform.h"
+#include "muse_on_protocol.h"
 #include "muse_on_action_map.h"
 #include "muse_on_connection.h"
 #include "muse_on_diagnostics.h"
@@ -1191,6 +1192,19 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   return YES;
 }
 
+- (BOOL)applyListenerFilterVerificationFromEvent:(NSDictionary *)event {
+  BOOL filterVerified;
+
+  if (!muse_on_protocol_read_json_boolean(
+          event, @"keyFilterApplied", &filterVerified) ||
+      ![self applyListenerFilterVerification:filterVerified]) {
+    [self recordListenerProtocolFailure];
+    return NO;
+  }
+  if (filterVerified) self.listenerSawFilterApplied = YES;
+  return YES;
+}
+
 - (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
                                   snapshot:(MuseOnConnectionSnapshot *)snapshot {
   NSString *stateName = event[@"state"];
@@ -1331,14 +1345,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     if (inputMonitoring && accessibility) {
       [self updatePermissionStateFromEvent:event];
     }
-    if (event[@"keyFilterApplied"]) {
-      if (![self applyListenerFilterVerification:
-                [event[@"keyFilterApplied"] boolValue]]) {
-        [self recordListenerProtocolFailure];
-        return;
-      }
-      if (self.filterVerified) self.listenerSawFilterApplied = YES;
-    }
+    if (![self applyListenerFilterVerificationFromEvent:event]) return;
     muse_on_diagnostics_record_listener_ready(&_diagnostics);
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"focus_changed"]) {
@@ -1346,12 +1353,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self requireNeutralEntry];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
-    if (![self applyListenerFilterVerification:
-              [event[@"keyFilterApplied"] boolValue]]) {
-      [self recordListenerProtocolFailure];
-      return;
-    }
-    if (self.filterVerified) self.listenerSawFilterApplied = YES;
+    if (![self applyListenerFilterVerificationFromEvent:event]) return;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_restored"]) {
     self.listenerSawFilterRestored = YES;
@@ -1361,9 +1363,15 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     }
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"neutral_entry"]) {
+    BOOL inputsReleased;
+    if (!muse_on_protocol_read_json_boolean(
+            event, @"inputsReleased", &inputsReleased)) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
     if (!muse_on_topology_host_apply_neutral_entry(
             &_topologyHostState, self.listenerTaskGeneration,
-            [event[@"inputsReleased"] boolValue])) {
+            inputsReleased)) {
       [self recordListenerProtocolFailure];
       return;
     }
@@ -1399,11 +1407,26 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     MuseOnRecoveryOutcome recoveryOutcomeValue;
     MuseOnTopologyEventResult recoveryResult;
     NSString *recoveryOutcome = event[@"recoveryOutcome"];
+    BOOL inputsReleased;
+    BOOL permissionGranted;
+    BOOL filterVerified;
+    BOOL codexForeground;
     BOOL recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
     BOOL neutralEntryPending =
         [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
-    BOOL recoveryFailed = [recoveryOutcome isEqualToString:@"failure"] ||
-                          (!recoverySucceeded && !neutralEntryPending);
+    BOOL recoveryFailed = [recoveryOutcome isEqualToString:@"failure"];
+    if ((!recoverySucceeded && !neutralEntryPending && !recoveryFailed) ||
+        !muse_on_protocol_read_json_boolean(
+            event, @"inputsReleased", &inputsReleased) ||
+        !muse_on_protocol_read_json_boolean(
+            event, @"permissionGranted", &permissionGranted) ||
+        !muse_on_protocol_read_json_boolean(
+            event, @"filterVerified", &filterVerified) ||
+        !muse_on_protocol_read_json_boolean(
+            event, @"codexForeground", &codexForeground)) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
     recoveryOutcomeValue = recoverySucceeded
         ? MUSE_ON_RECOVERY_OUTCOME_SUCCESS
         : (neutralEntryPending ? MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING
@@ -1415,9 +1438,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     }
     recoveryResult = muse_on_topology_host_apply_recovery(
         &_topologyHostState, self.listenerTaskGeneration, recoveryTopology,
-        recoveryOutcomeValue, [event[@"inputsReleased"] boolValue],
-        [event[@"permissionGranted"] boolValue],
-        [event[@"filterVerified"] boolValue]);
+        recoveryOutcomeValue, inputsReleased, permissionGranted,
+        filterVerified);
     if (recoveryResult == MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID) {
       [self recordListenerProtocolFailure];
       return;
@@ -1430,7 +1452,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     self.listenerRecoveryFailed = _topologyHostState.recovery_failed;
     self.permissionGranted = _topologyHostState.permission_granted;
     if (self.permissionGranted) self.retryPermissionPending = NO;
-    self.codexForeground = [event[@"codexForeground"] boolValue];
+    self.codexForeground = codexForeground;
     if (recoveryFailed) {
       MuseOnSafetyFailure reportedFailure = [self safetyFailureFromString:
           event[@"recoveryFailure"]];
@@ -1445,8 +1467,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
                      safetyFailure:self.listenerSafetyFailure];
     } else if (neutralEntryPending) {
       /* Verified cleanup after this event transitions the host to
-       * Inactive — Release controls; the normal listener observes the fresh
-       * release without another Retry. */
+       * Inactive — Verifying control; the fresh normal listener must verify
+       * live filtering and Neutral Entry without another Retry. */
     }
     if (self.listenerRecoveryMode && self.listenerTask != nil &&
         (self.listenerStopPurpose == kListenerStopForRetry ||
@@ -1454,8 +1476,14 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       [self.listenerTask terminate];
     }
   } else if ([name isEqualToString:@"stopped"]) {
+    BOOL releaseFailed;
+    if (!muse_on_protocol_read_json_boolean(
+            event, @"releaseFailed", &releaseFailed)) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
     self.listenerSawStopped = YES;
-    self.listenerCleanupVerified = ![event[@"releaseFailed"] boolValue] &&
+    self.listenerCleanupVerified = !releaseFailed &&
                                    (!safetyReason ||
                                     [safetyReason isEqualToString:@"none"]);
     if (safetyReason && ![safetyReason isEqualToString:@"none"]) {

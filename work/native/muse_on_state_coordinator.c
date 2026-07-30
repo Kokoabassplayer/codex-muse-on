@@ -62,13 +62,15 @@ static bool cleanup_is_verified(MuseOnPrerequisites prerequisites) {
          observed_safety_failure(prerequisites) == MUSE_ON_SAFETY_FAILURE_NONE;
 }
 
-static bool active_gates_except_neutral_entry_are_clear(
+static bool recovery_gates_are_clear(
     MuseOnPrerequisites prerequisites) {
-  /* Foreground is an ordinary Active gate, not a safety-recovery gate. */
+  /* Foreground and Neutral Entry are ordinary Active gates. Live filter proof
+   * is re-established by the next normal generation after Retry clears. */
   return prerequisites.permission_granted &&
          !prerequisites.multiple_controllers &&
          prerequisites.controller_connected &&
-         prerequisites.session_available && prerequisites.filter_verified;
+         prerequisites.session_available &&
+         prerequisites.recovery_filter_verified;
 }
 
 static void set_disabled(MuseOnState *state) {
@@ -295,7 +297,7 @@ void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
     state->safety_latched = true;
   } else if (state->safety_latched && command == MUSE_ON_COMMAND_RETRY &&
              cleanup_is_verified(prerequisites) &&
-             active_gates_except_neutral_entry_are_clear(prerequisites)) {
+             recovery_gates_are_clear(prerequisites)) {
     state->safety_latched = false;
     state->safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
   }

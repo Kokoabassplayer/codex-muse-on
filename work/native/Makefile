@@ -13,12 +13,12 @@ TEST_BINARIES = muse_on_decoder_test muse_on_action_map_test \
 	muse_on_controller_map_test muse_on_connection_observer_test \
 	muse_on_quit_policy_test muse_on_permission_test \
 	muse_on_listener_completion_gate_test muse_on_topology_test \
-	muse_on_capture_test
+	muse_on_capture_test muse_on_protocol_test
 FOCUSED_TEST_BINARIES = muse_on_state_coordinator_test muse_on_connection_test \
 	muse_on_key_filter_test muse_on_platform_test muse_on_controller_map_test \
 	muse_on_connection_observer_test muse_on_quit_policy_test \
 	muse_on_permission_test muse_on_listener_completion_gate_test \
-	muse_on_topology_test muse_on_capture_test
+	muse_on_topology_test muse_on_capture_test muse_on_protocol_test
 ANALYZER_REPORTS = muse_on_listener.plist muse_on_platform.plist \
 	muse_on_key_filter.plist muse_on_capture.plist muse_on_state_coordinator.plist \
 	muse_on_setup_state.plist muse_on_connection.plist \
@@ -46,6 +46,7 @@ test: $(TEST_BINARIES)
 	./muse_on_listener_completion_gate_test
 	./muse_on_topology_test
 	./muse_on_capture_test
+	./muse_on_protocol_test
 
 test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_state_coordinator_test
@@ -59,6 +60,7 @@ test-focused: $(FOCUSED_TEST_BINARIES)
 	./muse_on_listener_completion_gate_test
 	./muse_on_topology_test
 	./muse_on_capture_test
+	./muse_on_protocol_test
 
 test-sanitize:
 	@set -eu; \
@@ -148,6 +150,10 @@ muse_on_capture_test: muse_on_capture.c muse_on_action_map.c muse_on_decoder.c \
 	$(CC) $(CFLAGS) -I. muse_on_capture.c muse_on_action_map.c \
 		muse_on_decoder.c \
 		tests/muse_on_capture_test.c $(HID_FRAMEWORKS) -o $@
+
+muse_on_protocol_test: tests/muse_on_protocol_test.m muse_on_protocol.h
+	$(CC) $(CFLAGS) -fobjc-arc -I. tests/muse_on_protocol_test.m \
+		-framework Foundation -o $@
 
 listener: muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c
 	$(CC) $(CFLAGS) -I. muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c \

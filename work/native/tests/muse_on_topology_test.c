@@ -231,11 +231,12 @@ static void test_typed_recovery_pending_requires_fresh_neutral_entry(void) {
                     MUSE_ON_SAFETY_FAILURE_NONE);
   assert(!coordinator.safety_latched);
   assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
-  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
   assert(!coordinator.effects.request_dispatch);
 
-  /* Only a fresh listener generation's neutral-entry observation can make
-   * this Active. */
+  /* Only a fresh normal listener generation's filter and Neutral Entry
+   * observations can make this Active. */
   muse_on_topology_host_begin(&host, 5, false);
   assert(muse_on_topology_host_apply_topology(
              &host, 5, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x440000)) ==
@@ -246,6 +247,81 @@ static void test_typed_recovery_pending_requires_fresh_neutral_entry(void) {
                     MUSE_ON_SAFETY_FAILURE_NONE);
   assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
   assert(coordinator.effects.request_dispatch);
+}
+
+static void test_recovery_filter_proof_survives_required_restoration(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
+
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 12, true);
+  coordinator.enabled_intent = true;
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  assert(coordinator.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 12, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x121200),
+             MUSE_ON_RECOVERY_OUTCOME_SUCCESS, true, true, true) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(host.recovery_filter_verified);
+  assert(!host.filter_verified);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 12, false));
+  assert(muse_on_topology_host_invalidate(
+      &host, 12, false, MUSE_ON_SAFETY_FAILURE_NONE));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_RETRY,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(!coordinator.safety_latched);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(!coordinator.effects.request_dispatch);
+
+  muse_on_topology_host_begin(&host, 13, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 13, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x121200)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 13, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(!coordinator.effects.request_dispatch);
+
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 13, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(coordinator.effects.request_dispatch);
+}
+
+static void test_recovery_outcome_tuples_are_strictly_terminal(void) {
+  MuseOnTopologyHostState host;
+
+  muse_on_topology_host_init(&host);
+  muse_on_topology_host_begin(&host, 14, true);
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 14, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x141400),
+             MUSE_ON_RECOVERY_OUTCOME_WAIT, true, true, true) ==
+         MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID);
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 14, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x141400),
+             (MuseOnRecoveryOutcome)99, true, true, true) ==
+         MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID);
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 14, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x141400),
+             MUSE_ON_RECOVERY_OUTCOME_SUCCESS, false, true, true) ==
+         MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID);
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 14, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x141400),
+             MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING, true, true,
+             true) == MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID);
+  assert(muse_on_topology_host_apply_recovery(
+             &host, 14, snapshot(MUSE_ON_CONNECTION_DISCONNECTED, 0),
+             MUSE_ON_RECOVERY_OUTCOME_FAILURE, false, false, false) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(host.recovery_failed);
+  assert(!host.recovery_filter_verified);
 }
 
 static void test_focus_loss_requires_fresh_neutral_entry(void) {
@@ -339,6 +415,8 @@ int main(void) {
   test_filter_restoration_and_stale_events_cannot_reactivate();
   test_stale_generation_and_unexpected_exit_fail_closed();
   test_typed_recovery_pending_requires_fresh_neutral_entry();
+  test_recovery_filter_proof_survives_required_restoration();
+  test_recovery_outcome_tuples_are_strictly_terminal();
   test_focus_loss_requires_fresh_neutral_entry();
   test_multiple_to_single_requires_fresh_neutral_entry();
   test_invalid_snapshot_is_rejected_not_disconnected();

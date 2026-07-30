@@ -17,11 +17,11 @@ TCC, accessibility, UI, installation, or public-distribution acceptance.
   verified filtering/capture, and Neutral Entry.
 - **Fail-closed control verification:** The listener-task generation owns the
   topology. Active and dispatch require current permission/session/Codex
-  foreground gates, one paired controller, fresh Neutral Entry, and verified
-  filtering/capture for that same generation. Until filtering/capture is
-  verified, the menu reports `Inactive — Verifying control`; `filter_restored`,
-  topology change, and a new generation clear that verification. Stale events
-  cannot reactivate dispatch.
+  foreground gates, one paired controller, fresh Neutral Entry, and live
+  verified filtering/capture from that same normal generation. Until that live
+  proof exists, the menu reports `Inactive — Verifying control`;
+  `filter_restored`, topology change, and a new generation clear it. Recovery
+  proof never satisfies Active, and stale events cannot reactivate dispatch.
 - **Foreground boundary:** Only frontmost bundle ID `com.openai.codex`
   qualifies. Focus or either paired-interface loss immediately blocks dispatch,
   resets Neutral Entry, and attempts release of any synthetic hold. Foreground
@@ -29,9 +29,12 @@ TCC, accessibility, UI, installation, or public-distribution acceptance.
   connected input remains Reserved while dispatch is blocked.
 - **Safety and recovery:** Hold release and Pass-through restoration must be
   verified. A safety failure latches fail-closed; only explicit Retry with
-  cleanup and current non-neutral safety gates, including verified
-  filtering/capture, can clear it. A fresh Neutral Entry remains required
-  before dispatch after recovery.
+  cleanup, current non-neutral safety gates, and terminal evidence that the
+  recovery generation verified filtering/capture before restoration can clear
+  it. That evidence is retained only for Retry; after the latch clears, a fresh
+  normal generation must independently prove topology, live filtering/capture,
+  and Neutral Entry before dispatch. Background Retry may clear the latch but
+  cannot dispatch.
 - **Start Automatically:** This independent preference defaults on after First
   Enable and controls whether macOS opens the menu-bar app at login. It does
   not itself activate dispatch; normal startup revalidates all gates quietly.

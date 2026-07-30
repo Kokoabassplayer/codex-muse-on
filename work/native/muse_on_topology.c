@@ -48,6 +48,7 @@ static void clear_host_observation(MuseOnTopologyHostState *state) {
   state->controller_location_id = 0;
   state->inputs_released = false;
   state->filter_verified = false;
+  state->recovery_filter_verified = false;
 }
 
 void muse_on_topology_host_init(MuseOnTopologyHostState *state) {
@@ -119,17 +120,35 @@ MuseOnTopologyEventResult muse_on_topology_host_apply_recovery(
     MuseOnConnectionSnapshot snapshot, MuseOnRecoveryOutcome outcome,
     bool inputs_released, bool permission_granted, bool filter_verified) {
   MuseOnTopologyEventResult result =
-      muse_on_topology_host_apply_topology(state, generation, snapshot);
+      validate_host_event(state, generation, snapshot);
+  bool single = snapshot.state == MUSE_ON_CONNECTION_SINGLE;
 
   if (result != MUSE_ON_TOPOLOGY_EVENT_ACCEPTED) return result;
-  state->recovery_validated =
-      outcome == MUSE_ON_RECOVERY_OUTCOME_SUCCESS ||
-      outcome == MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING;
-  state->recovery_failed = outcome == MUSE_ON_RECOVERY_OUTCOME_FAILURE ||
-                           !state->recovery_validated;
+  if (!state->recovery_mode) {
+    return MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID;
+  }
+  if (outcome != MUSE_ON_RECOVERY_OUTCOME_SUCCESS &&
+      outcome != MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING &&
+      outcome != MUSE_ON_RECOVERY_OUTCOME_FAILURE) {
+    return MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID;
+  }
+  if ((outcome == MUSE_ON_RECOVERY_OUTCOME_SUCCESS &&
+       (!single || !permission_granted || !filter_verified ||
+        !inputs_released)) ||
+      (outcome == MUSE_ON_RECOVERY_OUTCOME_NEUTRAL_ENTRY_PENDING &&
+       (!single || !permission_granted || !filter_verified ||
+        inputs_released))) {
+    return MUSE_ON_TOPOLOGY_EVENT_REJECTED_INVALID;
+  }
+  result = muse_on_topology_host_apply_topology(state, generation, snapshot);
+  if (result != MUSE_ON_TOPOLOGY_EVENT_ACCEPTED) return result;
+  state->recovery_validated = outcome != MUSE_ON_RECOVERY_OUTCOME_FAILURE;
+  state->recovery_failed = outcome == MUSE_ON_RECOVERY_OUTCOME_FAILURE;
   state->inputs_released = inputs_released;
   state->permission_granted = permission_granted;
-  state->filter_verified = filter_verified;
+  state->filter_verified = false;
+  state->recovery_filter_verified =
+      state->recovery_validated && filter_verified;
   return MUSE_ON_TOPOLOGY_EVENT_ACCEPTED;
 }
 
@@ -154,6 +173,7 @@ bool muse_on_topology_host_apply_filter_verification(
        !state->controller_connected || state->multiple_controllers)) {
     return false;
   }
+  if (filter_verified && state->recovery_mode) return true;
   state->filter_verified = filter_verified;
   return true;
 }
@@ -210,6 +230,7 @@ MuseOnSafetyFailure muse_on_topology_host_apply_coordinator(
       .session_available = inputs.session_available,
       .codex_foreground = inputs.codex_foreground,
       .filter_verified = topology->filter_verified,
+      .recovery_filter_verified = topology->recovery_filter_verified,
       .inputs_released = topology->inputs_released,
   };
   muse_on_state_apply(coordinator, command, prerequisites);

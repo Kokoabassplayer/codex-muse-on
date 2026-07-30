@@ -16,6 +16,7 @@ static MuseOnPrerequisites all_clear(void) {
   p.session_available = true;
   p.codex_foreground = true;
   p.filter_verified = true;
+  p.recovery_filter_verified = true;
   p.inputs_released = true;
   return p;
 }
@@ -384,7 +385,7 @@ static void test_retry_keeps_latch_when_prerequisites_unmet(void) {
   assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_SAFETY_LATCH);
 }
 
-static void test_retry_keeps_latch_without_verified_filter(void) {
+static void test_retry_keeps_latch_without_recovery_filter_proof(void) {
   MuseOnState state;
   MuseOnPrerequisites p;
 
@@ -396,8 +397,46 @@ static void test_retry_keeps_latch_without_verified_filter(void) {
 
   p.safety_latched = false;
   p.filter_verified = false;
+  p.recovery_filter_verified = false;
   muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
   assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(!state.effects.request_dispatch);
+}
+
+static void test_clean_recovery_filter_proof_clears_to_verifying(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_latched = true;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_latched = false;
+  p.filter_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(!state.safety_latched);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(!state.effects.request_dispatch);
+}
+
+static void test_background_recovery_filter_proof_clears_without_dispatch(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  p.safety_latched = true;
+  p.codex_foreground = false;
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_latched = false;
+  p.filter_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(!state.safety_latched);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND);
   assert(!state.effects.request_dispatch);
 }
 
@@ -967,7 +1006,9 @@ int main(void) {
   test_retry_clears_safety_latch_when_prerequisites_met();
   test_background_retry_clears_latch_without_activation();
   test_retry_keeps_latch_when_prerequisites_unmet();
-  test_retry_keeps_latch_without_verified_filter();
+  test_retry_keeps_latch_without_recovery_filter_proof();
+  test_clean_recovery_filter_proof_clears_to_verifying();
+  test_background_recovery_filter_proof_clears_without_dispatch();
   test_disable_during_safety_latch();
   test_latch_persists_through_ordinary_observation();
   test_only_retry_clears_latch();

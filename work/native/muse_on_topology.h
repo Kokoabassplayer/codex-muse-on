@@ -42,6 +42,7 @@ typedef struct {
   bool inputs_released;
   bool permission_granted;
   bool filter_verified;
+  bool recovery_filter_verified;
   bool recovery_mode;
   bool recovery_validated;
   bool recovery_failed;
