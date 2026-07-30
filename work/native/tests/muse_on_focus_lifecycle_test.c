@@ -79,9 +79,11 @@ static void initialize_trace(
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
   assert(muse_on_topology_host_apply_filter_verification(
       &sink->host, kGeneration, true));
-  muse_on_listener_lifecycle_init(lifecycle, lifecycle_event, sink);
+  muse_on_listener_lifecycle_init(
+      lifecycle, MUSE_ON_LISTENER_ROUTE_REQUIRES_FOREGROUND,
+      lifecycle_event, sink);
   assert(muse_on_listener_lifecycle_bind(
-      lifecycle, MUSE_ON_PROFILE_PEDAL, kControllerLocation, true, true));
+      lifecycle, MUSE_ON_PROFILE_PEDAL, kControllerLocation));
   assert(muse_on_listener_lifecycle_focus_changed(lifecycle, true));
   assert(muse_on_listener_lifecycle_observe_report(
       lifecycle, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0, keyboard_neutral,
@@ -177,8 +179,50 @@ static void test_held_across_focus_return_is_blocked(void) {
   assert(sink.begin_count == 0 && sink.end_count == 0);
 }
 
+static void test_dry_run_routes_without_focus_transition(void) {
+  static const uint8_t keyboard_neutral[8] = {0};
+  static const uint8_t joystick_neutral[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x00, 0x00,
+  };
+  static const uint8_t pedal_down[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x10, 0x00,
+  };
+  TraceSink sink = {0};
+  MuseOnListenerLifecycle lifecycle;
+  const uint64_t start_ns = UINT64_C(4000000000);
+
+  muse_on_topology_host_init(&sink.host);
+  muse_on_state_init(&sink.coordinator);
+  muse_on_topology_host_begin(&sink.host, kGeneration, false);
+  assert(muse_on_topology_host_apply_topology(
+             &sink.host, kGeneration,
+             (MuseOnConnectionSnapshot){
+                 MUSE_ON_CONNECTION_SINGLE, kControllerLocation}) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  muse_on_listener_lifecycle_init(
+      &lifecycle, MUSE_ON_LISTENER_ROUTE_DRY_RUN, lifecycle_event, &sink);
+  assert(muse_on_listener_lifecycle_bind(
+      &lifecycle, MUSE_ON_PROFILE_PEDAL, kControllerLocation));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0, keyboard_neutral,
+      sizeof(keyboard_neutral), start_ns, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, joystick_neutral,
+      sizeof(joystick_neutral), start_ns + 1, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns + 2, true));
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + MUSE_ON_HOLD_DEBOUNCE_NS + 2, true);
+  assert(sink.focus_count == 0);
+  assert(sink.begin_count == 1);
+}
+
 int main(void) {
   test_captured_focus_epoch_trace();
   test_held_across_focus_return_is_blocked();
+  test_dry_run_routes_without_focus_transition();
   return 0;
 }

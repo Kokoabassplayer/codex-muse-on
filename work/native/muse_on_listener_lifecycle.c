@@ -5,6 +5,12 @@ static bool valid_profile(MuseOnProfile profile) {
          profile == MUSE_ON_PROFILE_PEDAL;
 }
 
+static bool route_policy_allows_dispatch(
+    const MuseOnListenerLifecycle *lifecycle) {
+  return lifecycle->route_policy == MUSE_ON_LISTENER_ROUTE_DRY_RUN ||
+         lifecycle->foreground;
+}
+
 static void reset_bound_inputs(MuseOnListenerLifecycle *lifecycle) {
   muse_on_decoder_init(&lifecycle->keyboard_decoder);
   muse_on_decoder_init(&lifecycle->joystick_decoder);
@@ -78,11 +84,12 @@ static void emit_action(
 }
 
 void muse_on_listener_lifecycle_init(
-    MuseOnListenerLifecycle *lifecycle, MuseOnListenerLifecycleSink sink,
-    void *sink_context) {
+    MuseOnListenerLifecycle *lifecycle, MuseOnListenerRoutePolicy route_policy,
+    MuseOnListenerLifecycleSink sink, void *sink_context) {
   if (!lifecycle) return;
   *lifecycle = (MuseOnListenerLifecycle){
       .profile = MUSE_ON_PROFILE_CONTROLLER_ONLY,
+      .route_policy = route_policy,
       .sink = sink,
       .sink_context = sink_context,
   };
@@ -91,24 +98,18 @@ void muse_on_listener_lifecycle_init(
 
 bool muse_on_listener_lifecycle_bind(
     MuseOnListenerLifecycle *lifecycle, MuseOnProfile profile,
-    uint32_t controller_location_id, bool keyboard_present,
-    bool joystick_present) {
+    uint32_t controller_location_id) {
   if (!lifecycle || !valid_profile(profile) ||
-      controller_location_id == 0 || !keyboard_present ||
-      !joystick_present) {
+      controller_location_id == 0) {
     return false;
   }
   if (lifecycle->bound && lifecycle->profile == profile &&
-      lifecycle->controller_location_id == controller_location_id &&
-      lifecycle->keyboard_present == keyboard_present &&
-      lifecycle->joystick_present == joystick_present) {
+      lifecycle->controller_location_id == controller_location_id) {
     return true;
   }
   lifecycle->profile = profile;
   lifecycle->controller_location_id = controller_location_id;
   lifecycle->bound = true;
-  lifecycle->keyboard_present = keyboard_present;
-  lifecycle->joystick_present = joystick_present;
   reset_bound_inputs(lifecycle);
   return true;
 }
@@ -116,8 +117,6 @@ bool muse_on_listener_lifecycle_bind(
 bool muse_on_listener_lifecycle_unbind(MuseOnListenerLifecycle *lifecycle) {
   if (!lifecycle || !lifecycle->bound) return false;
   lifecycle->bound = false;
-  lifecycle->keyboard_present = false;
-  lifecycle->joystick_present = false;
   lifecycle->controller_location_id = 0;
   reset_bound_inputs(lifecycle);
   return true;
@@ -156,12 +155,10 @@ bool muse_on_listener_lifecycle_observe_report(
   size_t index;
 
   if (!lifecycle || !lifecycle->bound) return false;
-  if (interface_kind == MUSE_ON_INTERFACE_KEYBOARD_BOOT &&
-      lifecycle->keyboard_present) {
+  if (interface_kind == MUSE_ON_INTERFACE_KEYBOARD_BOOT) {
     decoder = &lifecycle->keyboard_decoder;
     router = &lifecycle->keyboard_router;
-  } else if (interface_kind == MUSE_ON_INTERFACE_JOYSTICK &&
-             lifecycle->joystick_present) {
+  } else if (interface_kind == MUSE_ON_INTERFACE_JOYSTICK) {
     decoder = &lifecycle->joystick_decoder;
     router = &lifecycle->joystick_router;
   } else {
@@ -172,7 +169,8 @@ bool muse_on_listener_lifecycle_observe_report(
           report_length, &observation)) {
     return false;
   }
-  if (!lifecycle->foreground || !lifecycle->inputs_released) {
+  if (!route_policy_allows_dispatch(lifecycle) ||
+      !lifecycle->inputs_released) {
     reconcile_neutral_entry(lifecycle);
     return true;
   }
@@ -192,7 +190,8 @@ void muse_on_listener_lifecycle_tick(
     bool external_route_gate) {
   MuseOnActionEvent action;
 
-  if (!lifecycle || !lifecycle->bound || !lifecycle->foreground ||
+  if (!lifecycle || !lifecycle->bound ||
+      !route_policy_allows_dispatch(lifecycle) ||
       !lifecycle->inputs_released || !external_route_gate) {
     return;
   }
@@ -220,6 +219,5 @@ bool muse_on_listener_lifecycle_is_bound_to(
     const MuseOnListenerLifecycle *lifecycle, MuseOnProfile profile,
     uint32_t controller_location_id) {
   return lifecycle && lifecycle->bound && lifecycle->profile == profile &&
-         lifecycle->controller_location_id == controller_location_id &&
-         lifecycle->keyboard_present && lifecycle->joystick_present;
+         lifecycle->controller_location_id == controller_location_id;
 }

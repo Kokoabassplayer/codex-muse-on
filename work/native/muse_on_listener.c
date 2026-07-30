@@ -878,8 +878,7 @@ static void sync_lifecycle_binding(ListenerState *state) {
   alreadyBound = muse_on_listener_lifecycle_is_bound_to(
       &state->lifecycle, state->config.profile, controllerLocation);
   if (!muse_on_listener_lifecycle_bind(
-          &state->lifecycle, state->config.profile, controllerLocation,
-          true, true) ||
+          &state->lifecycle, state->config.profile, controllerLocation) ||
       alreadyBound) {
     return;
   }
@@ -1294,7 +1293,12 @@ int main(int argc, char *argv[]) {
             argv[0]);
     return 64;
   }
-  muse_on_listener_lifecycle_init(&state.lifecycle, lifecycle_event, &state);
+  muse_on_listener_lifecycle_init(
+      &state.lifecycle,
+      state.config.mode == MUSE_ON_MODE_DRY_RUN
+          ? MUSE_ON_LISTENER_ROUTE_DRY_RUN
+          : MUSE_ON_LISTENER_ROUTE_REQUIRES_FOREGROUND,
+      lifecycle_event, &state);
   muse_on_key_filter_restore_policy_init(&state.filterRestorePolicy);
 
   setvbuf(stdout, NULL, _IONBF, 0);
