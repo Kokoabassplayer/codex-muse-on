@@ -52,6 +52,13 @@ bool muse_on_capture_observe_report(
     MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
     MuseOnProfile profile, uint8_t report_id, const uint8_t *report,
     size_t report_length, MuseOnInputObservation *observation);
+void muse_on_capture_focus_changed(
+    MuseOnDecoder *decoder, MuseOnActionRouter *router,
+    MuseOnProfile profile, bool codex_foreground,
+    bool *neutral_entry_ready);
+MuseOnNeutralEntryState muse_on_capture_controller_neutral_state(
+    const MuseOnDecoder *keyboard_decoder,
+    const MuseOnDecoder *joystick_decoder, MuseOnProfile profile);
 MuseOnNeutralEntryState muse_on_capture_probe_neutral_entry(
     MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
     MuseOnProfile profile, uint8_t report_id, uint8_t *report,

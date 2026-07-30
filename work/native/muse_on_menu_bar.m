@@ -1356,7 +1356,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"focus_changed"]) {
     self.codexForeground = [event[@"codexFrontmost"] boolValue];
-    [self requireNeutralEntry];
+    if (!self.codexForeground) [self requireNeutralEntry];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
     if (![self applyListenerFilterVerificationFromEvent:event]) return;

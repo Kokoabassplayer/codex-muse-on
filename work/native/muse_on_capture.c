@@ -84,6 +84,37 @@ bool muse_on_capture_observe_report(
   return observation->neutral_entry_state != MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
 }
 
+void muse_on_capture_focus_changed(
+    MuseOnDecoder *decoder, MuseOnActionRouter *router,
+    MuseOnProfile profile, bool codex_foreground,
+    bool *neutral_entry_ready) {
+  if (!decoder || !router || !neutral_entry_ready) return;
+  if (codex_foreground) return;
+  muse_on_action_router_init(router, profile);
+  *neutral_entry_ready = false;
+}
+
+MuseOnNeutralEntryState muse_on_capture_controller_neutral_state(
+    const MuseOnDecoder *keyboard_decoder,
+    const MuseOnDecoder *joystick_decoder, MuseOnProfile profile) {
+  MuseOnNeutralEntryState keyboard_state =
+      muse_on_selected_profile_neutral_state(
+          keyboard_decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, profile);
+  MuseOnNeutralEntryState joystick_state =
+      muse_on_selected_profile_neutral_state(
+          joystick_decoder, MUSE_ON_INTERFACE_JOYSTICK, profile);
+
+  if (keyboard_state == MUSE_ON_NEUTRAL_ENTRY_HELD ||
+      joystick_state == MUSE_ON_NEUTRAL_ENTRY_HELD) {
+    return MUSE_ON_NEUTRAL_ENTRY_HELD;
+  }
+  if (keyboard_state == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN ||
+      joystick_state == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN) {
+    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+  }
+  return MUSE_ON_NEUTRAL_ENTRY_RELEASED;
+}
+
 MuseOnNeutralEntryState muse_on_capture_probe_neutral_entry(
     MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
     MuseOnProfile profile, uint8_t report_id, uint8_t *report,

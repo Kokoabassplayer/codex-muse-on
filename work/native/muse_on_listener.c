@@ -511,6 +511,55 @@ static void emit_neutral_entry_if_connected(const ListenerState *state) {
 
 static const DeviceSlot *active_keyboard_slot_at_location(
     const ListenerState *state, uint32_t locationID);
+static const DeviceSlot *active_joystick_slot_at_location(
+    const ListenerState *state, uint32_t locationID);
+
+static MuseOnNeutralEntryState tracked_controller_neutral_state(
+    const ListenerState *state) {
+  const DeviceSlot *keyboardSlot;
+  const DeviceSlot *joystickSlot;
+  uint32_t controllerLocation;
+
+  if (!state ||
+      !validated_controller_location(state, &controllerLocation)) {
+    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+  }
+  keyboardSlot =
+      active_keyboard_slot_at_location(state, controllerLocation);
+  joystickSlot =
+      active_joystick_slot_at_location(state, controllerLocation);
+  if (!keyboardSlot || !joystickSlot) {
+    return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+  }
+  return muse_on_capture_controller_neutral_state(
+      &keyboardSlot->decoder, &joystickSlot->decoder,
+      state->config.profile);
+}
+
+static void reconcile_tracked_neutral_entry(ListenerState *state) {
+  MuseOnNeutralEntryState trackedState;
+  DeviceSlot *slot;
+  uint32_t controllerLocation;
+  bool wasReleased;
+  bool isReleased;
+
+  if (!state ||
+      !validated_controller_location(state, &controllerLocation)) {
+    return;
+  }
+  wasReleased = all_inputs_released(state);
+  trackedState = tracked_controller_neutral_state(state);
+  isReleased = trackedState == MUSE_ON_NEUTRAL_ENTRY_RELEASED;
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (!slot->removed && slot->locationID == controllerLocation) {
+      slot->neutralEntryReady = isReleased;
+    }
+  }
+  if (wasReleased != isReleased) {
+    printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
+           boolean_string(isReleased));
+  }
+}
 
 static bool active_filter_matches_current_keyboard(
     const ListenerState *state, uint32_t controllerLocation) {
@@ -833,13 +882,8 @@ static void report_received(void *context, IOReturn result, void *sender,
           (uint8_t)reportID, report, (size_t)reportLength, &observation)) {
     return;
   }
-  if (!slot->neutralEntryReady) {
-    if (observation.neutral_entry_state != MUSE_ON_NEUTRAL_ENTRY_RELEASED) {
-      return;
-    }
-    slot->neutralEntryReady = true;
-    printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
-           boolean_string(all_inputs_released(state)));
+  if (!state->codexFrontmost || !all_inputs_released(state)) {
+    reconcile_tracked_neutral_entry(state);
     return;
   }
   if (!routing_is_enabled(state)) return;
@@ -859,6 +903,17 @@ static const DeviceSlot *active_keyboard_slot_at_location(
 
   for (slot = state->slots; slot; slot = slot->next) {
     if (!slot->removed && slot->kind == kInterfaceKeyboard &&
+        slot->locationID == locationID) return slot;
+  }
+  return NULL;
+}
+
+static const DeviceSlot *active_joystick_slot_at_location(
+    const ListenerState *state, uint32_t locationID) {
+  const DeviceSlot *slot;
+
+  for (slot = state->slots; slot; slot = slot->next) {
+    if (!slot->removed && slot->kind == kInterfaceJoystick &&
         slot->locationID == locationID) return slot;
   }
   return NULL;
@@ -1127,17 +1182,20 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
   refresh_permission_state(state, nowNs);
   frontmost = muse_on_codex_is_frontmost();
   if (!state->focusKnown || frontmost != state->codexFrontmost) {
+    DeviceSlot *slot;
+
     state->focusKnown = true;
     state->codexFrontmost = frontmost;
     printf("{\"event\":\"focus_changed\",\"codexFrontmost\":%s}\n",
            boolean_string(frontmost));
     if (!frontmost) {
       force_release_synthetic_hold(state, "codex_focus_lost");
-      reset_slots(state, kInterfaceUnknown, false);
-    } else {
-      reset_slots(state, kInterfaceUnknown, false);
-      probe_current_neutral_entries(state);
-      emit_neutral_entry_if_connected(state);
+    }
+    for (slot = state->slots; slot; slot = slot->next) {
+      if (slot->removed) continue;
+      muse_on_capture_focus_changed(
+          &slot->decoder, &slot->router, state->config.profile,
+          frontmost, &slot->neutralEntryReady);
     }
   }
 
