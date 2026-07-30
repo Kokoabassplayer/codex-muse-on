@@ -12,6 +12,65 @@ typedef struct {
   MuseOnActionPhase phase;
 } MappingCase;
 
+static void test_current_reports_prove_selected_profile_neutral_entry(void) {
+  static const uint8_t joystick_neutral[] = {
+      0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0xff, 0xff, 0x00, 0x00,
+  };
+  static const uint8_t pedal_held[] = {
+      0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0xff, 0xff, 0x10, 0x00,
+  };
+  static const uint8_t keyboard_neutral[32] = {0};
+  static const uint8_t keyboard_control_held[32] = {0x00, 0x00, 0x27};
+  MuseOnDecoder decoder;
+  MuseOnEvent events[MUSE_ON_MAX_EVENTS_PER_REPORT];
+
+  muse_on_decoder_init(&decoder);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_JOYSTICK,
+             MUSE_ON_PROFILE_CONTROLLER_ONLY) == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN);
+  assert(muse_on_decode_report(
+             &decoder, MUSE_ON_INTERFACE_JOYSTICK, 1, joystick_neutral,
+             sizeof(joystick_neutral), events,
+             MUSE_ON_MAX_EVENTS_PER_REPORT) == 0);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_JOYSTICK,
+             MUSE_ON_PROFILE_CONTROLLER_ONLY) ==
+         MUSE_ON_NEUTRAL_ENTRY_RELEASED);
+
+  assert(muse_on_decode_report(
+             &decoder, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_held,
+             sizeof(pedal_held), events,
+             MUSE_ON_MAX_EVENTS_PER_REPORT) == 1);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_JOYSTICK,
+             MUSE_ON_PROFILE_CONTROLLER_ONLY) ==
+         MUSE_ON_NEUTRAL_ENTRY_RELEASED);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_JOYSTICK,
+             MUSE_ON_PROFILE_PEDAL) == MUSE_ON_NEUTRAL_ENTRY_HELD);
+
+  muse_on_decoder_init(&decoder);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT,
+             MUSE_ON_PROFILE_CONTROLLER_ONLY) == MUSE_ON_NEUTRAL_ENTRY_UNKNOWN);
+  assert(muse_on_decode_report(
+             &decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0, keyboard_neutral,
+             sizeof(keyboard_neutral), events,
+             MUSE_ON_MAX_EVENTS_PER_REPORT) == 0);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT,
+             MUSE_ON_PROFILE_PEDAL) == MUSE_ON_NEUTRAL_ENTRY_RELEASED);
+  assert(muse_on_decode_report(
+             &decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0,
+             keyboard_control_held, sizeof(keyboard_control_held), events,
+             MUSE_ON_MAX_EVENTS_PER_REPORT) == 1);
+  assert(muse_on_selected_profile_neutral_state(
+             &decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT,
+             MUSE_ON_PROFILE_CONTROLLER_ONLY) == MUSE_ON_NEUTRAL_ENTRY_HELD);
+}
+
 static void test_confirmed_controller_mappings(void) {
   const MappingCase cases[] = {
       {MUSE_ON_PROFILE_CONTROLLER_ONLY, MUSE_ON_EVENT_WHITE1_DOWN,
@@ -301,6 +360,7 @@ static void test_hold_timestamp_regression_cannot_emit(void) {
 }
 
 int main(void) {
+  test_current_reports_prove_selected_profile_neutral_entry();
   test_confirmed_controller_mappings();
   test_pedal_profile_and_ignored_events();
   test_stable_strings();

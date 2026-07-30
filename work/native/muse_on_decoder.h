@@ -75,6 +75,7 @@ typedef struct {
 } MuseOnEvent;
 
 typedef struct {
+  bool joystick_report_seen;
   uint8_t joystick_axes[7];
   uint16_t joystick_hat;
   uint16_t joystick_buttons;

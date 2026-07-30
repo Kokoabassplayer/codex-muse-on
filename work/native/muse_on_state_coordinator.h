@@ -150,7 +150,8 @@ void muse_on_state_init(MuseOnState *state);
 void muse_on_state_apply(MuseOnState *state, MuseOnCommand command,
                          MuseOnPrerequisites prerequisites);
 
-/* Listener startup and recovery are not Neutral Entry evidence. */
+/* Startup/recovery alone are not evidence; a current-state or release
+ * observation from the authoritative listener is required. */
 void muse_on_neutral_entry_require(MuseOnPrerequisites *prerequisites);
 
 /* Decide whether recovery is still settling or may emit one terminal snapshot. */

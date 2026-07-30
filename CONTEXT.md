@@ -29,11 +29,11 @@ The state in which the exact frontmost macOS application has bundle ID `com.open
 _Avoid_: ChatGPT foreground, Codex-named app, approximate match
 
 **Neutral Entry**:
-A prerequisite for Active requiring every input in the selected Control Profile to be released after Enable or recovery. Inputs held across a state transition cannot trigger actions; a fresh press is required.
+A prerequisite for Active requiring every input in the selected Control Profile to appear released after Enable or recovery. Normal automatic Neutral Entry uses the best available kernel-maintained state from each exact, unique, absolute HID element with validated report, usage, descriptor, and value; malformed metadata or any read failure blocks it. This ordinary state is not strict freshness proof: a selected joystick control held before a cold listener start can be indistinguishable from neutral until a new report arrives. Users should avoid holding controller inputs while launching or restarting; the app is intended to remain running at login, with foreground-only dispatch, filtering/cleanup, and live continuous tracking unchanged. Inputs held across a state transition cannot trigger actions; a fresh press is required.
 _Avoid_: Resume held input, activate while held
 
 **Release controls**:
-An Inactive reason shown when every other Active prerequisite is satisfied but Neutral Entry is waiting for selected-profile inputs to be released. It clears automatically without Retry.
+An Inactive reason shown when every other Active prerequisite is satisfied but Neutral Entry cannot yet determine that selected-profile inputs appear released. It clears automatically after a best-available current-state or release observation, without Retry.
 _Avoid_: Retry required, stuck input
 
 **Inactive**:

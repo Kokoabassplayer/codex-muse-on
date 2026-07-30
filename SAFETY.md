@@ -35,6 +35,14 @@ local mapping state, and generated analyzer artifacts remain excluded.
 - **Narrow device scope:** filtering matches the Muse-On vendor ID, product ID,
   keyboard usage, and nonzero physical location ID. It does not rewrite
   controller firmware and does not intentionally remap other keyboards.
+- **Neutral Entry cold-start limitation:** automatic Neutral Entry uses the best
+  available kernel-maintained state from exact validated HID elements; malformed
+  metadata and read failures block dispatch. It is not a strict freshness proof:
+  a selected joystick control already held before a cold listener start can look
+  neutral until a new report arrives. Avoid holding controller inputs while
+  launching or restarting. Foreground-only dispatch, filtering/cleanup, and
+  continuous live tracking remain in force; the app is intended to stay running
+  at login.
 
 ## macOS permissions
 

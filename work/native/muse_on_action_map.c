@@ -127,6 +127,119 @@ static size_t control_mapping_count(void) {
   return sizeof(kControlMap) / sizeof(kControlMap[0]);
 }
 
+typedef enum {
+  MUSE_ON_CONTROL_STATE_NOT_APPLICABLE = 0,
+  MUSE_ON_CONTROL_STATE_UNKNOWN,
+  MUSE_ON_CONTROL_STATE_HELD,
+  MUSE_ON_CONTROL_STATE_RELEASED
+} MuseOnCurrentControlState;
+
+static bool keyboard_usage_held(const MuseOnDecoder *decoder, uint8_t usage) {
+  size_t index;
+
+  for (index = 0; index < sizeof(decoder->keyboard_usages); index++) {
+    if (decoder->keyboard_usages[index] == usage) return true;
+  }
+  return false;
+}
+
+static MuseOnCurrentControlState current_control_state(
+    const MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
+    MuseOnEventName press_event) {
+  uint16_t joystick_mask = 0;
+  uint8_t keyboard_usage = 0;
+
+  switch (press_event) {
+    case MUSE_ON_EVENT_WHITE1_DOWN: joystick_mask = 0x0001U; break;
+    case MUSE_ON_EVENT_BLACK2_DOWN: joystick_mask = 0x0002U; break;
+    case MUSE_ON_EVENT_BLACK6_DOWN: joystick_mask = 0x0004U; break;
+    case MUSE_ON_EVENT_BLACK8_DOWN: joystick_mask = 0x0008U; break;
+    case MUSE_ON_EVENT_PEDAL_DOWN: joystick_mask = 0x0010U; break;
+    case MUSE_ON_EVENT_WHITE3_DOWN: keyboard_usage = 0x27; break;
+    case MUSE_ON_EVENT_BLACK4_DOWN: keyboard_usage = 0x26; break;
+    case MUSE_ON_EVENT_WHITE5_DOWN: keyboard_usage = 0x50; break;
+    case MUSE_ON_EVENT_WHITE7_DOWN: keyboard_usage = 0x4f; break;
+    case MUSE_ON_EVENT_LEFT_BALL_NORTH_ENGAGED:
+      keyboard_usage = 0x3d;
+      break;
+    case MUSE_ON_EVENT_LEFT_BALL_SOUTH_ENGAGED:
+      keyboard_usage = 0x3c;
+      break;
+    case MUSE_ON_EVENT_RIGHT_BALL_VERTICAL_ENGAGED:
+      keyboard_usage = 0x1e;
+      break;
+    case MUSE_ON_EVENT_RIGHT_BALL_WEST_ENGAGED:
+      keyboard_usage = 0x1f;
+      break;
+    case MUSE_ON_EVENT_RIGHT_BALL_EAST_ENGAGED:
+      keyboard_usage = 0x20;
+      break;
+    case MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED:
+      if (interface_kind != MUSE_ON_INTERFACE_JOYSTICK) {
+        return MUSE_ON_CONTROL_STATE_NOT_APPLICABLE;
+      }
+      if (!decoder->joystick_report_seen) return MUSE_ON_CONTROL_STATE_UNKNOWN;
+      return decoder->joystick_hat == 0x005a
+                 ? MUSE_ON_CONTROL_STATE_HELD
+                 : MUSE_ON_CONTROL_STATE_RELEASED;
+    case MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED:
+      if (interface_kind != MUSE_ON_INTERFACE_JOYSTICK) {
+        return MUSE_ON_CONTROL_STATE_NOT_APPLICABLE;
+      }
+      if (!decoder->joystick_report_seen) return MUSE_ON_CONTROL_STATE_UNKNOWN;
+      return decoder->joystick_hat == 0x010e
+                 ? MUSE_ON_CONTROL_STATE_HELD
+                 : MUSE_ON_CONTROL_STATE_RELEASED;
+    default:
+      return MUSE_ON_CONTROL_STATE_NOT_APPLICABLE;
+  }
+
+  if (joystick_mask != 0) {
+    if (interface_kind != MUSE_ON_INTERFACE_JOYSTICK) {
+      return MUSE_ON_CONTROL_STATE_NOT_APPLICABLE;
+    }
+    if (!decoder->joystick_report_seen) return MUSE_ON_CONTROL_STATE_UNKNOWN;
+    return (decoder->joystick_buttons & joystick_mask) != 0
+               ? MUSE_ON_CONTROL_STATE_HELD
+               : MUSE_ON_CONTROL_STATE_RELEASED;
+  }
+  if (interface_kind != MUSE_ON_INTERFACE_KEYBOARD_BOOT) {
+    return MUSE_ON_CONTROL_STATE_NOT_APPLICABLE;
+  }
+  if (!decoder->keyboard_usages_seen) return MUSE_ON_CONTROL_STATE_UNKNOWN;
+  return keyboard_usage_held(decoder, keyboard_usage)
+             ? MUSE_ON_CONTROL_STATE_HELD
+             : MUSE_ON_CONTROL_STATE_RELEASED;
+}
+
+MuseOnNeutralEntryState muse_on_selected_profile_neutral_state(
+    const MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
+    MuseOnProfile profile) {
+  bool matched_interface = false;
+  size_t index;
+
+  if (!decoder) return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+  for (index = 0; index < control_mapping_count(); index++) {
+    const MuseOnControlProfileMapping *profile_mapping =
+        muse_on_control_mapping_profile(&kControlMap[index], profile);
+    MuseOnCurrentControlState state;
+
+    if (!profile_mapping || !profile_mapping->available) continue;
+    state = current_control_state(decoder, interface_kind,
+                                  kControlMap[index].press_event);
+    if (state == MUSE_ON_CONTROL_STATE_NOT_APPLICABLE) continue;
+    matched_interface = true;
+    if (state == MUSE_ON_CONTROL_STATE_UNKNOWN) {
+      return MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+    }
+    if (state == MUSE_ON_CONTROL_STATE_HELD) {
+      return MUSE_ON_NEUTRAL_ENTRY_HELD;
+    }
+  }
+  return matched_interface ? MUSE_ON_NEUTRAL_ENTRY_RELEASED
+                           : MUSE_ON_NEUTRAL_ENTRY_UNKNOWN;
+}
+
 static bool set_action(MuseOnActionEvent *action, MuseOnActionId id,
                        MuseOnActionPhase phase, MuseOnEventName source) {
   if (!action) return false;

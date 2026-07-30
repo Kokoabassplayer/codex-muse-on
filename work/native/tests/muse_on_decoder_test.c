@@ -63,6 +63,8 @@ static const uint8_t generic_button12_down[] = {
 static const uint8_t keyboard_neutral[32] = {0x00};
 static const uint8_t keyboard_digit0_down[32] = {0x00, 0x00, 0x27};
 static const uint8_t keyboard_modifier_e0_down[32] = {0x01};
+static const uint8_t keyboard_boot_neutral[8] = {0x00};
+static const uint8_t keyboard_boot_digit0_down[8] = {0x00, 0x00, 0x27};
 
 static const uint8_t mouse_neutral[] = {0x00, 0x00, 0x00, 0x00};
 static const uint8_t mouse_button1_down[] = {0x01, 0x00, 0x00, 0x00};
@@ -125,6 +127,29 @@ static void test_first_active_report_emits_against_known_neutral(void) {
                           mouse_dx_positive, sizeof(mouse_dx_positive), events, 2) == 1);
   assert(events[0].name == MUSE_ON_EVENT_MOUSE_RELATIVE_X);
   assert(events[0].value == 5);
+}
+
+static void test_keyboard_boot_current_report_uses_six_usage_slots(void) {
+  MuseOnDecoder decoder;
+  MuseOnEvent events[2];
+
+  muse_on_decoder_init(&decoder);
+  assert(decode_interface(&decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0,
+                          keyboard_boot_neutral,
+                          sizeof(keyboard_boot_neutral), events, 2) == 0);
+  assert(decoder.keyboard_usages_seen);
+
+  assert(decode_interface(&decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0,
+                          keyboard_boot_digit0_down,
+                          sizeof(keyboard_boot_digit0_down), events, 2) == 1);
+  assert(events[0].name == MUSE_ON_EVENT_WHITE3_DOWN);
+  assert(events[0].usage == 0x27);
+
+  assert(decode_interface(&decoder, MUSE_ON_INTERFACE_KEYBOARD_BOOT, 0,
+                          keyboard_boot_neutral,
+                          sizeof(keyboard_boot_neutral), events, 2) == 1);
+  assert(events[0].name == MUSE_ON_EVENT_WHITE3_UP);
+  assert(events[0].usage == 0x27);
 }
 
 static void test_native_full_joystick_report_normalizes_matching_id_prefix(void) {
@@ -438,6 +463,7 @@ static void test_mouse_ignores_padding_button_bits(void) {
 }
 
 int main(void) {
+  test_keyboard_boot_current_report_uses_six_usage_slots();
   test_white1_press_and_release_after_neutral();
   test_first_active_report_emits_against_known_neutral();
   test_native_full_joystick_report_normalizes_matching_id_prefix();

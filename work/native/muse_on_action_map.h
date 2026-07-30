@@ -13,6 +13,12 @@ typedef enum {
 } MuseOnProfile;
 
 typedef enum {
+  MUSE_ON_NEUTRAL_ENTRY_UNKNOWN = 0,
+  MUSE_ON_NEUTRAL_ENTRY_HELD,
+  MUSE_ON_NEUTRAL_ENTRY_RELEASED
+} MuseOnNeutralEntryState;
+
+typedef enum {
   MUSE_ON_ACTION_TRIGGER = 0,
   MUSE_ON_ACTION_BEGIN,
   MUSE_ON_ACTION_END
@@ -112,6 +118,9 @@ typedef struct {
 
 bool muse_on_map_event(MuseOnProfile profile, MuseOnEventName source,
                        MuseOnActionEvent *action);
+MuseOnNeutralEntryState muse_on_selected_profile_neutral_state(
+    const MuseOnDecoder *decoder, MuseOnInterfaceKind interface_kind,
+    MuseOnProfile profile);
 void muse_on_action_router_init(MuseOnActionRouter *router, MuseOnProfile profile);
 bool muse_on_action_router_route(MuseOnActionRouter *router,
                                  MuseOnEventName source, uint64_t timestamp_ns,

@@ -1331,7 +1331,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"focus_changed"]) {
     self.codexForeground = [event[@"codexFrontmost"] boolValue];
-    if (!self.codexForeground) [self requireNeutralEntry];
+    [self requireNeutralEntry];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
     self.filterVerified = [event[@"keyFilterApplied"] boolValue];
@@ -1781,7 +1781,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   self.listenerOutputBuffer = [NSMutableData data];
   muse_on_listener_completion_gate_init(&_listenerCompletionGate);
   /* Listener startup is not Neutral Entry evidence. Keep the host fail-closed
-   * until every selected-profile control has reported released. */
+   * until the listener authoritatively observes every selected-profile
+   * control released. */
   [self requireNeutralEntry];
   [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   NSPipe *output = [NSPipe pipe];

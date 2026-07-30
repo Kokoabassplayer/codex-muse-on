@@ -369,6 +369,146 @@ static bool all_inputs_released(const ListenerState *state) {
   return true;
 }
 
+static bool read_keyboard_current_report(void *context, uint8_t reportID,
+                                         uint8_t *report,
+                                         size_t *reportLength) {
+  DeviceSlot *slot = context;
+  CFIndex length;
+  IOReturn result;
+
+  if (!slot || !slot->device || !report || !reportLength ||
+      *reportLength == 0 || *reportLength > (size_t)LONG_MAX) {
+    return false;
+  }
+  length = (CFIndex)*reportLength;
+  result = IOHIDDeviceGetReport(slot->device, kIOHIDReportTypeInput,
+                                (CFIndex)reportID, report, &length);
+  if (result != kIOReturnSuccess || length <= 0) return false;
+  *reportLength = (size_t)length;
+  return true;
+}
+
+typedef struct {
+  IOHIDDeviceRef device;
+  CFArrayRef elements;
+  MuseOnProfile profile;
+} JoystickElementReaderContext;
+
+static bool is_input_element(IOHIDElementType type) {
+  return type == kIOHIDElementTypeInput_Misc ||
+         type == kIOHIDElementTypeInput_Button ||
+         type == kIOHIDElementTypeInput_Axis ||
+         type == kIOHIDElementTypeInput_ScanCodes;
+}
+
+static bool joystick_element_for_usage(uint32_t usagePage, uint32_t usage,
+                                       MuseOnProfile profile,
+                                       MuseOnJoystickElement *element) {
+  if (!element) return false;
+  if (usagePage == kHIDPage_GenericDesktop &&
+      usage == kHIDUsage_GD_Hatswitch) {
+    *element = MUSE_ON_JOYSTICK_ELEMENT_HAT;
+    return true;
+  }
+  if (usagePage != kHIDPage_Button || usage < 1 || usage > 5 ||
+      (profile != MUSE_ON_PROFILE_PEDAL && usage == 5)) {
+    return false;
+  }
+  *element = (MuseOnJoystickElement)usage;
+  return true;
+}
+
+static bool read_joystick_current_element(
+    void *context, MuseOnJoystickElement requested,
+    MuseOnJoystickElementValue *snapshot) {
+  JoystickElementReaderContext *reader = context;
+  CFIndex count;
+  CFIndex index;
+  IOHIDElementRef selected = NULL;
+  IOHIDValueRef value = NULL;
+
+  if (!reader || !snapshot) return false;
+  if (!reader->device || !reader->elements) return false;
+
+  count = CFArrayGetCount(reader->elements);
+  for (index = 0; index < count; index++) {
+    IOHIDElementRef candidate =
+        (IOHIDElementRef)CFArrayGetValueAtIndex(reader->elements, index);
+    MuseOnJoystickElement element;
+
+    if (candidate && joystick_element_for_usage(
+                         IOHIDElementGetUsagePage(candidate),
+                         IOHIDElementGetUsage(candidate),
+                         reader->profile, &element)) {
+      if (element != requested) continue;
+      if (selected) return false;
+      selected = candidate;
+    }
+  }
+  if (!selected ||
+      IOHIDDeviceGetValue(reader->device, selected, &value) != kIOReturnSuccess ||
+      !value || IOHIDValueGetElement(value) != selected) {
+    return false;
+  }
+  *snapshot = (MuseOnJoystickElementValue){
+      .element = requested,
+      .is_absolute_input = is_input_element(IOHIDElementGetType(selected)) &&
+                           !IOHIDElementIsRelative(selected),
+      .report_id = IOHIDElementGetReportID(selected),
+      .usage_page = IOHIDElementGetUsagePage(selected),
+      .usage = IOHIDElementGetUsage(selected),
+      .logical_minimum = IOHIDElementGetLogicalMin(selected),
+      .logical_maximum = IOHIDElementGetLogicalMax(selected),
+      .value = IOHIDValueGetIntegerValue(value),
+  };
+  return true;
+}
+
+static void probe_current_neutral_entries(ListenerState *state) {
+  DeviceSlot *slot;
+
+  if (!state) return;
+  for (slot = state->slots; slot; slot = slot->next) {
+    MuseOnNeutralEntryState neutralState;
+
+    if (slot->removed || slot->reportCapacity <= 0) continue;
+    if (slot->kind == kInterfaceJoystick) {
+      JoystickElementReaderContext reader = {
+          .device = slot->device,
+          .elements = IOHIDDeviceCopyMatchingElements(
+              slot->device, NULL, kIOHIDOptionsTypeNone),
+          .profile = state->config.profile,
+      };
+      neutralState = muse_on_capture_probe_joystick_elements(
+          &slot->decoder, state->config.profile,
+          read_joystick_current_element, &reader);
+      if (reader.elements) CFRelease(reader.elements);
+    } else {
+      uint8_t *report = calloc((size_t)slot->reportCapacity, sizeof(*report));
+      if (!report) {
+        slot->neutralEntryReady = false;
+        continue;
+      }
+      neutralState = muse_on_capture_probe_neutral_entry(
+          &slot->decoder, decoder_interface_kind(slot->kind),
+          state->config.profile, 0, report,
+          (size_t)slot->reportCapacity, read_keyboard_current_report, slot);
+      free(report);
+    }
+    slot->neutralEntryReady =
+        neutralState == MUSE_ON_NEUTRAL_ENTRY_RELEASED;
+  }
+}
+
+static void emit_neutral_entry_if_connected(const ListenerState *state) {
+  uint32_t locationID;
+
+  if (!validated_controller_location(state, &locationID)) return;
+  (void)locationID;
+  printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
+         boolean_string(all_inputs_released(state)));
+}
+
 static const DeviceSlot *active_keyboard_slot_at_location(
     const ListenerState *state, uint32_t locationID);
 
@@ -646,10 +786,9 @@ static void report_received(void *context, IOReturn result, void *sender,
   ManagerContext *managerContext = context;
   ListenerState *state;
   DeviceSlot *slot;
-  MuseOnEvent events[MUSE_ON_MAX_EVENTS_PER_REPORT];
+  MuseOnInputObservation observation;
   MuseOnInterfaceKind interfaceKind;
   uint64_t receivedNs;
-  size_t eventCount;
   size_t index;
 
   if (!managerContext || !managerContext->state || !sender) return;
@@ -689,47 +828,26 @@ static void report_received(void *context, IOReturn result, void *sender,
 
   interfaceKind = decoder_interface_kind(slot->kind);
   receivedNs = monotonic_ns();
-  eventCount = muse_on_decode_report(
-      &slot->decoder, interfaceKind, (uint8_t)reportID, report,
-      (size_t)reportLength, events, MUSE_ON_MAX_EVENTS_PER_REPORT);
+  if (!muse_on_capture_observe_report(
+          &slot->decoder, interfaceKind, state->config.profile,
+          (uint8_t)reportID, report, (size_t)reportLength, &observation)) {
+    return;
+  }
   if (!slot->neutralEntryReady) {
-    bool hasHeldControl = false;
-    for (index = 0; index < eventCount; index++) {
-      switch (events[index].name) {
-        case MUSE_ON_EVENT_WHITE1_DOWN:
-        case MUSE_ON_EVENT_BLACK2_DOWN:
-        case MUSE_ON_EVENT_BLACK6_DOWN:
-        case MUSE_ON_EVENT_BLACK8_DOWN:
-        case MUSE_ON_EVENT_PEDAL_DOWN:
-        case MUSE_ON_EVENT_WHITE3_DOWN:
-        case MUSE_ON_EVENT_BLACK4_DOWN:
-        case MUSE_ON_EVENT_WHITE5_DOWN:
-        case MUSE_ON_EVENT_WHITE7_DOWN:
-        case MUSE_ON_EVENT_LEFT_BALL_NORTH_ENGAGED:
-        case MUSE_ON_EVENT_LEFT_BALL_SOUTH_ENGAGED:
-        case MUSE_ON_EVENT_RIGHT_BALL_VERTICAL_ENGAGED:
-        case MUSE_ON_EVENT_RIGHT_BALL_WEST_ENGAGED:
-        case MUSE_ON_EVENT_RIGHT_BALL_EAST_ENGAGED:
-        case MUSE_ON_EVENT_TURNTABLE_CLOCKWISE_ENGAGED:
-        case MUSE_ON_EVENT_TURNTABLE_COUNTERCLOCKWISE_ENGAGED:
-          hasHeldControl = true;
-          break;
-        default:
-          break;
-      }
-      if (hasHeldControl) break;
+    if (observation.neutral_entry_state != MUSE_ON_NEUTRAL_ENTRY_RELEASED) {
+      return;
     }
-    if (hasHeldControl) return;
     slot->neutralEntryReady = true;
     printf("{\"event\":\"neutral_entry\",\"inputsReleased\":%s}\n",
            boolean_string(all_inputs_released(state)));
     return;
   }
   if (!routing_is_enabled(state)) return;
-  for (index = 0; index < eventCount; index++) {
+  for (index = 0; index < observation.event_count; index++) {
     MuseOnActionEvent action;
-    if (muse_on_action_router_route(&slot->router, events[index].name,
-                                    receivedNs, &action)) {
+    if (muse_on_action_router_route(
+            &slot->router, observation.events[index].name, receivedNs,
+            &action)) {
       handle_action(state, slot, &action);
     }
   }
@@ -831,6 +949,7 @@ static void device_added(void *context, IOReturn result, void *sender,
   }
 
   reset_slots(state, kInterfaceUnknown, false);
+  probe_current_neutral_entries(state);
   emit_device_event("device_added", slot);
   if (state->config.mode != MUSE_ON_MODE_DRY_RUN) {
     uint32_t controllerLocation;
@@ -843,6 +962,7 @@ static void device_added(void *context, IOReturn result, void *sender,
     }
   }
   emit_current_topology(state);
+  emit_neutral_entry_if_connected(state);
 }
 
 static void device_removed(void *context, IOReturn result, void *sender,
@@ -1014,6 +1134,10 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
     if (!frontmost) {
       force_release_synthetic_hold(state, "codex_focus_lost");
       reset_slots(state, kInterfaceUnknown, false);
+    } else {
+      reset_slots(state, kInterfaceUnknown, false);
+      probe_current_neutral_entries(state);
+      emit_neutral_entry_if_connected(state);
     }
   }
 

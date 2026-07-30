@@ -3,6 +3,7 @@
 void muse_on_decoder_init(MuseOnDecoder *decoder) {
   size_t index;
 
+  decoder->joystick_report_seen = false;
   for (index = 0; index < 7; index++) {
     decoder->joystick_axes[index] = 0x80;
   }
@@ -29,10 +30,11 @@ static void set_joystick_button_event(MuseOnEvent *event, uint8_t report_id,
   event->value = 0;
 }
 
-static bool contains_usage(const uint8_t *usages, uint8_t usage) {
+static bool contains_usage(const uint8_t *usages, size_t usage_count,
+                           uint8_t usage) {
   size_t index;
 
-  for (index = 0; index < 30; index++) {
+  for (index = 0; index < usage_count; index++) {
     if (usages[index] == usage) return true;
   }
   return false;
@@ -111,8 +113,10 @@ size_t muse_on_decode_report(MuseOnDecoder *decoder,
     uint8_t changed_modifiers;
     uint8_t bit_mask;
     uint8_t modifier_usage;
+    size_t current_usage_count;
 
-    if (byte_count != 32) return 0;
+    if (byte_count != 8 && byte_count != 32) return 0;
+    current_usage_count = byte_count - 2;
     if (!decoder->keyboard_usages_seen) {
       decoder->keyboard_usages_seen = true;
     }
@@ -133,7 +137,8 @@ size_t muse_on_decode_report(MuseOnDecoder *decoder,
     }
     for (index = 0; index < 30 && event_count < event_capacity; index++) {
       uint8_t usage = decoder->keyboard_usages[index];
-      if (usage && !contains_usage(bytes + 2, usage)) {
+      if (usage &&
+          !contains_usage(bytes + 2, current_usage_count, usage)) {
         events[event_count].interface_kind = interface_kind;
         events[event_count].report_id = report_id;
         events[event_count].name = keyboard_usage_event_name(usage, false);
@@ -143,9 +148,12 @@ size_t muse_on_decode_report(MuseOnDecoder *decoder,
         events[event_count++].value = 0;
       }
     }
-    for (index = 0; index < 30 && event_count < event_capacity; index++) {
+    for (index = 0;
+         index < current_usage_count && event_count < event_capacity;
+         index++) {
       uint8_t usage = bytes[index + 2];
-      if (usage && !contains_usage(decoder->keyboard_usages, usage)) {
+      if (usage &&
+          !contains_usage(decoder->keyboard_usages, 30, usage)) {
         events[event_count].interface_kind = interface_kind;
         events[event_count].report_id = report_id;
         events[event_count].name = keyboard_usage_event_name(usage, true);
@@ -155,7 +163,10 @@ size_t muse_on_decode_report(MuseOnDecoder *decoder,
         events[event_count++].value = 0;
       }
     }
-    for (index = 0; index < 30; index++) decoder->keyboard_usages[index] = bytes[index + 2];
+    for (index = 0; index < 30; index++) {
+      decoder->keyboard_usages[index] =
+          index < current_usage_count ? bytes[index + 2] : 0;
+    }
     return event_count;
   }
 
@@ -220,6 +231,7 @@ size_t muse_on_decode_report(MuseOnDecoder *decoder,
   }
   if (byte_count != 11) return 0;
 
+  decoder->joystick_report_seen = true;
   for (index = 0; index < 7 && event_count < event_capacity; index++) {
     if (bytes[index] != decoder->joystick_axes[index]) {
       events[event_count].interface_kind = interface_kind;

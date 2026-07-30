@@ -69,8 +69,10 @@ test-sanitize:
 muse_on_decoder_test: muse_on_decoder.c tests/muse_on_decoder_test.c muse_on_decoder.h
 	$(CC) $(CFLAGS) -I. muse_on_decoder.c tests/muse_on_decoder_test.c -o $@
 
-muse_on_action_map_test: muse_on_action_map.c tests/muse_on_action_map_test.c muse_on_action_map.h muse_on_decoder.h
-	$(CC) $(CFLAGS) -I. muse_on_action_map.c tests/muse_on_action_map_test.c -o $@
+muse_on_action_map_test: muse_on_action_map.c muse_on_decoder.c \
+		tests/muse_on_action_map_test.c muse_on_action_map.h muse_on_decoder.h
+	$(CC) $(CFLAGS) -I. muse_on_action_map.c muse_on_decoder.c \
+		tests/muse_on_action_map_test.c -o $@
 
 muse_on_config_test: muse_on_config.c tests/muse_on_config_test.c muse_on_config.h muse_on_action_map.h
 	$(CC) $(CFLAGS) -I. muse_on_config.c tests/muse_on_config_test.c -o $@
@@ -141,9 +143,10 @@ muse_on_topology_test: muse_on_topology.c muse_on_connection.c \
 	$(CC) $(CFLAGS) -I. muse_on_topology.c muse_on_connection.c \
 		muse_on_state_coordinator.c tests/muse_on_topology_test.c -o $@
 
-muse_on_capture_test: muse_on_capture.c tests/muse_on_capture_test.c \
-		muse_on_capture.h
-	$(CC) $(CFLAGS) -I. muse_on_capture.c \
+muse_on_capture_test: muse_on_capture.c muse_on_action_map.c muse_on_decoder.c \
+		tests/muse_on_capture_test.c muse_on_capture.h
+	$(CC) $(CFLAGS) -I. muse_on_capture.c muse_on_action_map.c \
+		muse_on_decoder.c \
 		tests/muse_on_capture_test.c $(HID_FRAMEWORKS) -o $@
 
 listener: muse_on_listener.c $(PHASE2_SOURCES) muse_on_topology.c
