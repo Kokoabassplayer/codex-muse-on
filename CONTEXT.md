@@ -17,7 +17,7 @@ A persisted user request to become Disabled while safety cleanup is not yet veri
 _Avoid_: Disabled, automatic resume
 
 **Active**:
-The temporary state in which shortcut dispatch is permitted because the exact Muse-On is connected, required permissions are valid, and Codex is foreground.
+The temporary state in which shortcut dispatch is permitted because the exact Muse-On is connected, required permissions are valid, verified controller filtering/capture is current, Neutral Entry is satisfied, and Codex is foreground.
 _Avoid_: Enabled, ready
 
 **Foreground Only**:
@@ -33,15 +33,19 @@ A prerequisite for Active requiring every input in the selected Control Profile 
 _Avoid_: Resume held input, activate while held
 
 **Release controls**:
-An Inactive reason shown when every other Active prerequisite is satisfied but Neutral Entry cannot yet determine that selected-profile inputs appear released. It clears automatically after a best-available current-state or release observation, without Retry.
+An Inactive reason shown when every other Active prerequisite, including verified controller filtering/capture, is satisfied but Neutral Entry cannot yet determine that selected-profile inputs appear released. It clears automatically after a best-available current-state or release observation, without Retry.
 _Avoid_: Retry required, stuck input
+
+**Verifying control**:
+An Inactive reason shown after all higher-priority ordinary gates pass while the current listener generation has not verified controller filtering/capture. It clears only after that generation reports verified filtering/capture; filter restoration, topology change, or a new generation clears the verification.
+_Avoid_: Active before capture, Release controls before filtering
 
 **Inactive**:
 An Enabled state in which shortcut dispatch is blocked because at least one Active prerequisite is unmet. The menu presents one specific reason.
 _Avoid_: Disabled, ready
 
 **Inactive Reason**:
-The single highest-priority explanation for Inactive: a specific Safety latch failure, Permission Required, Multiple Controllers, Muse-On Disconnected, Session unavailable, Codex not foreground, then Release controls.
+The single highest-priority explanation for Inactive: a specific Safety latch failure, Permission Required, Multiple Controllers, Muse-On Disconnected, Session unavailable, Codex not foreground, Verifying control, then Release controls.
 _Avoid_: Multiple simultaneous reasons, generic unavailable
 
 **Safety latch**:

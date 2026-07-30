@@ -143,6 +143,16 @@ bool muse_on_topology_host_apply_neutral_entry(
   return true;
 }
 
+bool muse_on_topology_host_apply_filter_verification(
+    MuseOnTopologyHostState *state, uint64_t generation, bool filter_verified) {
+  if (!state || state->authority.generation != generation ||
+      !state->authority.authoritative) {
+    return false;
+  }
+  state->filter_verified = filter_verified;
+  return true;
+}
+
 void muse_on_topology_host_require_neutral_entry(
     MuseOnTopologyHostState *state) {
   if (!state) return;
@@ -194,6 +204,7 @@ MuseOnSafetyFailure muse_on_topology_host_apply_coordinator(
       .multiple_controllers = topology->multiple_controllers,
       .session_available = inputs.session_available,
       .codex_foreground = inputs.codex_foreground,
+      .filter_verified = topology->filter_verified,
       .inputs_released = topology->inputs_released,
   };
   muse_on_state_apply(coordinator, command, prerequisites);

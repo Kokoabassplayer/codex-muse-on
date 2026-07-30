@@ -46,6 +46,11 @@ static void test_host_event_stream_drives_reader_state(void) {
                     MUSE_ON_SAFETY_FAILURE_NONE);
   assert(host.controller_connected);
   assert(host.controller_location_id == 0x110000);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 1, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
   assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
   assert(!coordinator.effects.request_dispatch);
 
@@ -71,6 +76,68 @@ static void test_host_event_stream_drives_reader_state(void) {
   assert(coordinator.inactive_reason == MUSE_ON_INACTIVE_REASON_DISCONNECTED);
 }
 
+static void test_active_requires_current_generation_filter_verification(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
+
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 8, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 8, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x880000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 8, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(!coordinator.effects.request_dispatch);
+
+  assert(muse_on_topology_host_apply_filter_verification(&host, 8, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+  assert(coordinator.effects.request_dispatch);
+}
+
+static void test_filter_restoration_and_stale_events_cannot_reactivate(void) {
+  MuseOnTopologyHostState host;
+  MuseOnState coordinator;
+
+  muse_on_topology_host_init(&host);
+  muse_on_state_init(&coordinator);
+  muse_on_topology_host_begin(&host, 9, false);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 9, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x990000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 9, true));
+  assert(muse_on_topology_host_apply_filter_verification(&host, 9, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.status == MUSE_ON_STATUS_ACTIVE);
+
+  assert(muse_on_topology_host_apply_filter_verification(&host, 9, false));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(!coordinator.effects.request_dispatch);
+
+  muse_on_topology_host_begin(&host, 10, false);
+  assert(!muse_on_topology_host_apply_filter_verification(&host, 9, true));
+  assert(!host.filter_verified);
+  assert(muse_on_topology_host_apply_topology(
+             &host, 10, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x990000)) ==
+         MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_neutral_entry(&host, 10, true));
+  apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
+                    MUSE_ON_SAFETY_FAILURE_NONE);
+  assert(coordinator.inactive_reason ==
+         MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(!coordinator.effects.request_dispatch);
+}
+
 static void test_stale_generation_and_unexpected_exit_fail_closed(void) {
   MuseOnTopologyHostState host;
   MuseOnState coordinator;
@@ -91,6 +158,7 @@ static void test_stale_generation_and_unexpected_exit_fail_closed(void) {
   assert(muse_on_topology_host_apply_topology(
              &host, 3, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x330000)) ==
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 3, true));
   apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
                     MUSE_ON_SAFETY_FAILURE_NONE);
   assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
@@ -152,6 +220,7 @@ static void test_typed_recovery_pending_requires_fresh_neutral_entry(void) {
   assert(muse_on_topology_host_apply_topology(
              &host, 5, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x440000)) ==
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 5, true));
   assert(muse_on_topology_host_apply_neutral_entry(&host, 5, true));
   apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
                     MUSE_ON_SAFETY_FAILURE_NONE);
@@ -169,6 +238,7 @@ static void test_focus_loss_requires_fresh_neutral_entry(void) {
   assert(muse_on_topology_host_apply_topology(
              &host, 6, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x660000)) ==
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 6, true));
   assert(muse_on_topology_host_apply_neutral_entry(&host, 6, true));
   apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
                     MUSE_ON_SAFETY_FAILURE_NONE);
@@ -206,6 +276,7 @@ static void test_multiple_to_single_requires_fresh_neutral_entry(void) {
   assert(muse_on_topology_host_apply_topology(
              &host, 7, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x770000)) ==
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 7, true));
   assert(muse_on_topology_host_apply_neutral_entry(&host, 7, true));
   apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_ENABLE,
                     MUSE_ON_SAFETY_FAILURE_NONE);
@@ -219,6 +290,8 @@ static void test_multiple_to_single_requires_fresh_neutral_entry(void) {
              &host, 7, snapshot(MUSE_ON_CONNECTION_SINGLE, 0x770000)) ==
          MUSE_ON_TOPOLOGY_EVENT_ACCEPTED);
   assert(!host.inputs_released);
+  assert(!host.filter_verified);
+  assert(muse_on_topology_host_apply_filter_verification(&host, 7, true));
   apply_coordinator(&host, &coordinator, MUSE_ON_COMMAND_NONE,
                     MUSE_ON_SAFETY_FAILURE_NONE);
   assert(coordinator.status == MUSE_ON_STATUS_INACTIVE);
@@ -241,6 +314,8 @@ static void test_invalid_snapshot_is_rejected_not_disconnected(void) {
 
 int main(void) {
   test_host_event_stream_drives_reader_state();
+  test_active_requires_current_generation_filter_verification();
+  test_filter_restoration_and_stale_events_cannot_reactivate();
   test_stale_generation_and_unexpected_exit_fail_closed();
   test_typed_recovery_pending_requires_fresh_neutral_entry();
   test_focus_loss_requires_fresh_neutral_entry();

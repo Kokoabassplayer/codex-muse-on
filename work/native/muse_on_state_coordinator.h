@@ -42,7 +42,8 @@ typedef enum {
   MUSE_ON_INACTIVE_REASON_DISCONNECTED,    /* 4 */
   MUSE_ON_INACTIVE_REASON_SESSION,         /* 5 */
   MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND,  /* 6 */
-  MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS /* 7 */
+  MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL, /* 7 */
+  MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS /* 8 */
 } MuseOnInactiveReason;
 
 typedef enum {
@@ -109,6 +110,7 @@ typedef struct {
   bool multiple_controllers;/* more than one complete Muse-On present */
   bool session_available;   /* session awake, unlocked, active */
   bool codex_foreground;    /* com.openai.codex frontmost */
+  bool filter_verified;     /* current controller filtering/capture verified */
   bool inputs_released;     /* Neutral Entry: selected-profile inputs freed */
 } MuseOnPrerequisites;
 

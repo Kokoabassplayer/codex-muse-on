@@ -38,6 +38,9 @@ static MuseOnInactiveReason evaluate_inactive_reason(
   if (!p.codex_foreground) {
     return MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND;
   }
+  if (!p.filter_verified) {
+    return MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL;
+  }
   if (!p.inputs_released) {
     return MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS;
   }
@@ -65,7 +68,7 @@ static bool active_gates_except_neutral_entry_are_clear(
   return prerequisites.permission_granted &&
          !prerequisites.multiple_controllers &&
          prerequisites.controller_connected &&
-         prerequisites.session_available;
+         prerequisites.session_available && prerequisites.filter_verified;
 }
 
 static void set_disabled(MuseOnState *state) {
@@ -327,6 +330,7 @@ const char *muse_on_inactive_reason_string(MuseOnInactiveReason reason) {
     case MUSE_ON_INACTIVE_REASON_DISCONNECTED: return "muse_on_disconnected";
     case MUSE_ON_INACTIVE_REASON_SESSION: return "session_unavailable";
     case MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND: return "codex_not_foreground";
+    case MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL: return "verifying_control";
     case MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS: return "release_controls";
   }
   return "unknown";

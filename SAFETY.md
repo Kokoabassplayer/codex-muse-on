@@ -1,100 +1,54 @@
 # Codex Muse-On safety report
 
-Status: pre-publication safety baseline for the local `0.3.1` prototype and
-the proposed public-source checkpoint. Reviewable Phase 2 source, mappings,
-and tests are prepared for separate approval; app bundles, binaries, logs,
-local mapping state, and generated analyzer artifacts remain excluded.
+Status: deterministic v1 safety baseline for the owner's local bundle. This
+document describes source and local-test behavior; it does not claim live HID,
+TCC, accessibility, UI, installation, or public-distribution acceptance.
 
-## Current safety behavior
+## Current v1 behavior
 
-- **Safe default:** launching without arguments selects `dry-run`; real Codex
-  actions require an explicit `--mode=active` launch argument.
-- **Codex-only dispatch:** captured or active actions route only while the
-  frontmost macOS application has bundle ID `com.openai.codex`. Foreground
-  status is checked again for each action.
-- **App-switch stop:** when Codex loses focus, dispatch is suspended, pending
-  push-to-talk release is attempted, and input state is reset. Release failure
-  is fatal. The monitor checks focus every 10 ms; this is prompt fail-safe
-  handling, not a hard real-time guarantee. The per-device key filter remains
-  in place during the helper session so raw controller keys cannot leak into
-  another application.
-- **Push-to-talk hold:** the pedal path emits debounced begin/end actions and
-  is covered by native tests plus live verification. Focus loss, disconnect,
-  and cleanup attempt a synthetic hold release; a failed release is fatal.
-- **Unplug handling:** a removed controller interface can no longer route actions.
-  Synthetic hold release is attempted and the temporary per-device mapping is
-  restored or cleared with the disconnected device; release or restoration
-  failure is fatal. The helper does not exit after an ordinary unplug, and a
-  partial loss of only one HID interface is not yet a guaranteed session-wide
-  stop.
-- **Fail closed:** active dispatch requires all of: active mode, Codex
-  foreground, the exact controller keyboard being captured, and event-posting
-  permission. Missing permission, a failed capture, an unknown device
-  location, or an event-posting error blocks dispatch. A failed hold release or
-  mapping restoration stops the run and returns an error.
-- **Narrow device scope:** filtering matches the Muse-On vendor ID, product ID,
-  keyboard usage, and nonzero physical location ID. It does not rewrite
-  controller firmware and does not intentionally remap other keyboards.
-- **Neutral Entry cold-start limitation:** automatic Neutral Entry uses the best
-  available kernel-maintained state from exact validated HID elements; malformed
-  metadata and read failures block dispatch. It is not a strict freshness proof:
-  a selected joystick control already held before a cold listener start can look
-  neutral until a new report arrives. Avoid holding controller inputs while
-  launching or restarting. Foreground-only dispatch, filtering/cleanup, and
-  continuous live tracking remain in force; the app is intended to stay running
-  at login.
+- **Persistent intent and menu-bar control:** First Enable records Enabled
+  intent; Disabled records the opposite. The menu-bar app is the user control
+  surface and presents Active, Inactive, Disabled, or Safety latch. Enabled is
+  not Active: dispatch is permitted only while every Active gate is current.
+- **Paired controller identity:** Connected means exactly one validated Muse-On
+  with its button and joystick interfaces paired at one physical location.
+  Loss of either interface, an unknown topology, or more than one complete
+  controller blocks dispatch. A reconnect requires a fresh listener topology,
+  verified filtering/capture, and Neutral Entry.
+- **Fail-closed control verification:** The listener-task generation owns the
+  topology. Active and dispatch require current permission/session/Codex
+  foreground gates, one paired controller, fresh Neutral Entry, and verified
+  filtering/capture for that same generation. Until filtering/capture is
+  verified, the menu reports `Inactive — Verifying control`; `filter_restored`,
+  topology change, and a new generation clear that verification. Stale events
+  cannot reactivate dispatch.
+- **Foreground boundary:** Only frontmost bundle ID `com.openai.codex`
+  qualifies. Focus loss resets Neutral Entry; foreground return alone does not
+  dispatch until a fresh release observation. Enabled, connected input remains
+  Reserved while dispatch is blocked.
+- **Safety and recovery:** Hold release and Pass-through restoration must be
+  verified. A safety failure latches fail-closed; only explicit Retry with
+  cleanup and current non-neutral safety gates, including verified
+  filtering/capture, can clear it. A fresh Neutral Entry remains required
+  before dispatch after recovery.
+- **Start Automatically:** This independent preference defaults on after First
+  Enable and controls whether macOS opens the menu-bar app at login. It does
+  not itself activate dispatch; normal startup revalidates all gates quietly.
+- **Local bundle:** the repository provides a stable installed local test-bundle
+  contract with the menu-bar executable and listener. The stable local signing
+  identity is used when available, otherwise the local bundle is ad-hoc signed.
 
-## macOS permissions
+## Known limitation
 
-- **Input Monitoring** is required to observe the Muse-On HID interfaces.
-- **Accessibility / event posting** is required only for `active` mode to send
-  the dedicated Codex shortcuts.
-- Permission denial or loss must leave action dispatch disabled. Users should
-  grant access only to the identified Codex Muse-On app and be able to revoke
-  it in **System Settings > Privacy & Security**.
-- Event-posting access is rechecked before every active action; Input Monitoring
-  state is refreshed once per second. Permission-loss detection is therefore
-  fail-closed but not a hard real-time guarantee.
-- These macOS grants apply to the app, not to one USB device. The implementation
-  narrows input handling to the exact Muse-On identity and gates synthetic
-  events to Codex, but users must still trust the granted executable.
-- The prototype does not require Full Disk Access, administrator privileges, or
-  network access.
-- The current local app is ad-hoc signed. A distributed executable needs a
-  stable signing identity so permission grants can be scoped to a consistent
-  application identity across updates.
+Neutral Entry uses the best available kernel-maintained state from validated
+HID elements. It is not strict freshness proof: a selected joystick control
+held before a cold listener start can appear neutral until a new report arrives.
+Avoid holding controls while launching or restarting. This limitation does not
+relax the verified filtering/capture, foreground, cleanup, or continuous
+tracking gates.
 
-## Automatic start and active-mode limitation
+## Distribution boundary
 
-Automatic start is not enabled or approved. If login launch is added later, it
-must start in `dry-run` and must not silently restore `active` mode. Automatic
-restart after a safety or restoration failure must also remain disabled.
-
-The current build has no user-facing mode switch, persistent active-state
-indicator, or emergency-stop control. `active` therefore needs explicit
-command-line handling and is not suitable for unattended startup or general
-distribution yet.
-
-Normal exit and handled termination signals run mapping restoration. A crash or
-`SIGKILL` cannot run cleanup; the next launch recognizes its own stale sink
-mapping and attempts recovery, but immediate cleanup cannot be guaranteed.
-
-## Required safeguards before publishing executable or controller source
-
-1. Preserve the Codex-foreground, exact-device, capture, and permission gates.
-2. Keep app-switch handling able to release holds and stop dispatch. Treat loss
-   of either member of the paired HID interfaces as a session-wide stop until
-   both interfaces reconnect and are revalidated.
-3. Verify temporary mappings are restored on normal exit, handled signals,
-   permission loss, and disconnect. Test startup recovery after unclean exit,
-   document the `SIGKILL` boundary, and keep restoration failure fail-closed.
-4. Add an explicit active-mode control with a continuously visible state and
-   an accessible emergency stop before offering automatic start.
-5. Keep automatic start in `dry-run` until the user explicitly enables active
-   control for that session.
-6. Document permission grant and revocation, test on each supported macOS
-   release, and publish only reviewed, reproducible artifacts signed with a
-   stable release identity.
-
-This report records the present safety boundary; it is not a claim that the
-prototype is ready for public installation.
+Developer ID signing, notarization, and public binary distribution remain
+blocked. Do not treat the local bundle or deterministic checks as public or
+live-system acceptance.

@@ -1054,7 +1054,6 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   self.retryPermissionDestinationOpened = NO;
   [self requireNeutralEntry];
   _controllerLocationID = 0;
-  _filterVerified = true;
   _listenerRecoveryValidated = NO;
   _listenerEverStarted = NO;
   _listenerCleanupKnown = NO;
@@ -1181,6 +1180,15 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 - (void)requireNeutralEntry {
   muse_on_topology_host_require_neutral_entry(&_topologyHostState);
   [self syncTopologyHostState];
+}
+
+- (BOOL)applyListenerFilterVerification:(BOOL)filterVerified {
+  if (!muse_on_topology_host_apply_filter_verification(
+          &_topologyHostState, self.listenerTaskGeneration, filterVerified)) {
+    return NO;
+  }
+  [self syncTopologyHostState];
+  return YES;
 }
 
 - (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
@@ -1324,7 +1332,8 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       [self updatePermissionStateFromEvent:event];
     }
     if (event[@"keyFilterApplied"]) {
-      self.filterVerified = [event[@"keyFilterApplied"] boolValue];
+      if (![self applyListenerFilterVerification:
+                [event[@"keyFilterApplied"] boolValue]]) return;
       if (self.filterVerified) self.listenerSawFilterApplied = YES;
     }
     muse_on_diagnostics_record_listener_ready(&_diagnostics);
@@ -1334,12 +1343,13 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self requireNeutralEntry];
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_applied"]) {
-    self.filterVerified = [event[@"keyFilterApplied"] boolValue];
+    if (![self applyListenerFilterVerification:
+              [event[@"keyFilterApplied"] boolValue]]) return;
     if (self.filterVerified) self.listenerSawFilterApplied = YES;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"filter_restored"]) {
     self.listenerSawFilterRestored = YES;
-    self.filterVerified = NO;
+    if (![self applyListenerFilterVerification:NO]) return;
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   } else if ([name isEqualToString:@"neutral_entry"]) {
     if (!muse_on_topology_host_apply_neutral_entry(
@@ -1878,6 +1888,10 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
         return [NSString stringWithUTF8String:muse_on_permission_guidance(
             self.missingPermissionGates)];
       }
+      if (_coordinator.inactive_reason ==
+          MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL) {
+        return @"Verifying control";
+      }
       return [NSString stringWithUTF8String:muse_on_inactive_reason_string(
           _coordinator.inactive_reason)];
   }
@@ -1909,7 +1923,9 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     case MUSE_ON_STATUS_INACTIVE:
       symbolName = @"circle.dashed";
       fallbackTitle = @"·";
-      stateLabel = @"Inactive — dispatch blocked";
+      stateLabel = _coordinator.inactive_reason ==
+          MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL
+          ? @"Inactive — Verifying control" : @"Inactive — dispatch blocked";
       break;
     case MUSE_ON_STATUS_SAFETY_LATCH:
       symbolName = @"exclamationmark.triangle";

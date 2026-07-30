@@ -15,6 +15,7 @@ static MuseOnPrerequisites all_clear(void) {
   p.multiple_controllers = false;
   p.session_available = true;
   p.codex_foreground = true;
+  p.filter_verified = true;
   p.inputs_released = true;
   return p;
 }
@@ -152,6 +153,25 @@ static void test_inputs_not_released_blocks_active(void) {
   assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
 }
 
+static void test_filter_verification_blocks_active_before_neutral_entry(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p;
+
+  muse_on_state_init(&state);
+  p = all_clear();
+  p.filter_verified = false;
+  p.inputs_released = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_INACTIVE);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(!state.effects.request_dispatch);
+
+  p.filter_verified = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS);
+  assert(!state.effects.request_dispatch);
+}
+
 /* Enable while filter is requested but dispatch is gated stays reserved. */
 static void test_enabled_connected_but_not_foreground_still_filters(void) {
   MuseOnState state;
@@ -266,6 +286,25 @@ static void test_not_foreground_priority(void) {
   assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND);
 }
 
+static void test_filter_verification_priority_and_string(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p;
+
+  muse_on_state_init(&state);
+  p = all_clear();
+  p.filter_verified = false;
+  p.inputs_released = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL);
+  assert(strcmp(muse_on_inactive_reason_string(
+                    MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL),
+                "verifying_control") == 0);
+
+  p.codex_foreground = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND);
+}
+
 /* Release controls is the lowest-priority reason. */
 static void test_release_controls_is_lowest_priority(void) {
   MuseOnState state;
@@ -343,6 +382,23 @@ static void test_retry_keeps_latch_when_prerequisites_unmet(void) {
   muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
   assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
   assert(state.inactive_reason == MUSE_ON_INACTIVE_REASON_SAFETY_LATCH);
+}
+
+static void test_retry_keeps_latch_without_verified_filter(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p;
+
+  muse_on_state_init(&state);
+  p = all_clear();
+  p.safety_latched = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+
+  p.safety_latched = false;
+  p.filter_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(!state.effects.request_dispatch);
 }
 
 /* Disable during safety latch persists intent removal. */
@@ -860,6 +916,9 @@ static void test_inactive_reason_strings(void) {
                     MUSE_ON_INACTIVE_REASON_NOT_FOREGROUND),
                 "codex_not_foreground") == 0);
   assert(strcmp(muse_on_inactive_reason_string(
+                    MUSE_ON_INACTIVE_REASON_VERIFYING_CONTROL),
+                "verifying_control") == 0);
+  assert(strcmp(muse_on_inactive_reason_string(
                     MUSE_ON_INACTIVE_REASON_RELEASE_CONTROLS),
                 "release_controls") == 0);
 }
@@ -894,6 +953,7 @@ int main(void) {
   test_codex_not_foreground_blocks_active();
   test_permission_missing_blocks_active();
   test_inputs_not_released_blocks_active();
+  test_filter_verification_blocks_active_before_neutral_entry();
   test_enabled_connected_but_not_foreground_still_filters();
   test_safety_latch_has_highest_priority();
   test_permission_priority();
@@ -902,10 +962,12 @@ int main(void) {
   test_disconnected_priority();
   test_session_priority();
   test_not_foreground_priority();
+  test_filter_verification_priority_and_string();
   test_release_controls_is_lowest_priority();
   test_retry_clears_safety_latch_when_prerequisites_met();
   test_background_retry_clears_latch_without_activation();
   test_retry_keeps_latch_when_prerequisites_unmet();
+  test_retry_keeps_latch_without_verified_filter();
   test_disable_during_safety_latch();
   test_latch_persists_through_ordinary_observation();
   test_only_retry_clears_latch();

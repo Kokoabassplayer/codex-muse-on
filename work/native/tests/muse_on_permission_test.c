@@ -14,6 +14,7 @@ static MuseOnPrerequisites all_clear(void) {
   p.controller_connected = true;
   p.session_available = true;
   p.codex_foreground = true;
+  p.filter_verified = true;
   p.inputs_released = true;
   return p;
 }
@@ -204,6 +205,7 @@ static void test_permission_recovery_requires_fresh_neutral_entry(void) {
   p.controller_connected = true;
   p.session_available = true;
   p.codex_foreground = true;
+  p.filter_verified = true;
   p.inputs_released = true;
   muse_on_state_init(&state);
   muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);

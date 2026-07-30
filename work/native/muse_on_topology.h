@@ -67,6 +67,8 @@ MuseOnTopologyEventResult muse_on_topology_host_apply_recovery(
     bool inputs_released, bool permission_granted, bool filter_verified);
 bool muse_on_topology_host_apply_neutral_entry(
     MuseOnTopologyHostState *state, uint64_t generation, bool inputs_released);
+bool muse_on_topology_host_apply_filter_verification(
+    MuseOnTopologyHostState *state, uint64_t generation, bool filter_verified);
 void muse_on_topology_host_require_neutral_entry(
     MuseOnTopologyHostState *state);
 bool muse_on_topology_host_invalidate(MuseOnTopologyHostState *state,
