@@ -3,6 +3,23 @@
 
 #import <Foundation/Foundation.h>
 
+#include <math.h>
+#include <stdint.h>
+
+static inline BOOL muse_on_protocol_read_json_string(
+    NSDictionary *event, NSString *key, NSString **value) {
+  id candidate;
+
+  if (![event isKindOfClass:[NSDictionary class]] ||
+      ![key isKindOfClass:[NSString class]] || !value) {
+    return NO;
+  }
+  candidate = event[key];
+  if (![candidate isKindOfClass:[NSString class]]) return NO;
+  *value = candidate;
+  return YES;
+}
+
 static inline BOOL muse_on_protocol_read_json_boolean(
     NSDictionary *event, NSString *key, BOOL *value) {
   id candidate;
@@ -17,6 +34,37 @@ static inline BOOL muse_on_protocol_read_json_boolean(
     return NO;
   }
   *value = CFBooleanGetValue((__bridge CFBooleanRef)candidate);
+  return YES;
+}
+
+static inline BOOL muse_on_protocol_read_json_uint32(
+    NSDictionary *event, NSString *key, uint32_t *value) {
+  id candidate;
+  CFTypeRef candidateRef;
+  double numericValue;
+  int64_t integralValue;
+
+  if (![event isKindOfClass:[NSDictionary class]] ||
+      ![key isKindOfClass:[NSString class]] || !value) {
+    return NO;
+  }
+  candidate = event[key];
+  if (!candidate) return NO;
+  candidateRef = (__bridge CFTypeRef)candidate;
+  if (CFGetTypeID(candidateRef) == CFBooleanGetTypeID() ||
+      CFGetTypeID(candidateRef) != CFNumberGetTypeID()) {
+    return NO;
+  }
+  if (!CFNumberGetValue((CFNumberRef)candidateRef, kCFNumberDoubleType,
+                        &numericValue) ||
+      !isfinite(numericValue) || trunc(numericValue) != numericValue ||
+      numericValue < 0 || numericValue > UINT32_MAX ||
+      !CFNumberGetValue((CFNumberRef)candidateRef, kCFNumberSInt64Type,
+                        &integralValue) ||
+      (double)integralValue != numericValue) {
+    return NO;
+  }
+  *value = (uint32_t)integralValue;
   return YES;
 }
 

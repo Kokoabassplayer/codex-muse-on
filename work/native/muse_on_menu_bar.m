@@ -1207,15 +1207,22 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
 
 - (BOOL)listenerTopologySnapshotFromEvent:(NSDictionary *)event
                                   snapshot:(MuseOnConnectionSnapshot *)snapshot {
-  NSString *stateName = event[@"state"];
-  if (![stateName isKindOfClass:[NSString class]]) {
-    stateName = event[@"topology"];
-  }
-  NSNumber *location = event[@"locationID"];
+  NSString *stateName;
+  uint32_t locationID;
   MuseOnConnectionState state;
 
-  if (![stateName isKindOfClass:[NSString class]] ||
-      ![location isKindOfClass:[NSNumber class]] || !snapshot) {
+  if (!snapshot) return NO;
+  if (event[@"state"]) {
+    if (!muse_on_protocol_read_json_string(
+            event, @"state", &stateName)) {
+      return NO;
+    }
+  } else if (!muse_on_protocol_read_json_string(
+                 event, @"topology", &stateName)) {
+    return NO;
+  }
+  if (!muse_on_protocol_read_json_uint32(
+          event, @"locationID", &locationID)) {
     return NO;
   }
   if ([stateName isEqualToString:@"unknown"]) {
@@ -1229,7 +1236,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   } else {
     return NO;
   }
-  *snapshot = (MuseOnConnectionSnapshot){state, location.unsignedIntValue};
+  *snapshot = (MuseOnConnectionSnapshot){state, locationID};
   return muse_on_connection_snapshot_is_valid(*snapshot);
 }
 
@@ -1289,7 +1296,6 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
   NSString *name = event[@"event"];
   NSString *actionName = event[@"action"];
   NSString *operation = event[@"operation"];
-  NSString *safetyReason = event[@"reason"];
 
   if (![name isKindOfClass:[NSString class]]) {
     [self recordListenerProtocolFailure];
@@ -1395,6 +1401,12 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
                          ? event[@"code"] : nil;
     [self recordListenerError:operation code:code];
   } else if ([name isEqualToString:@"safety_latch"]) {
+    NSString *safetyReason;
+    if (!muse_on_protocol_read_json_string(
+            event, @"reason", &safetyReason)) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
     self.listenerSawSafetyLatch = YES;
     self.listenerSafetyFailure = [self safetyFailureFromString:safetyReason];
     [self recordSafetyFailure:self.listenerSafetyFailure];
@@ -1406,16 +1418,19 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     MuseOnConnectionSnapshot recoveryTopology;
     MuseOnRecoveryOutcome recoveryOutcomeValue;
     MuseOnTopologyEventResult recoveryResult;
-    NSString *recoveryOutcome = event[@"recoveryOutcome"];
+    NSString *recoveryOutcome;
+    NSString *recoveryFailure;
     BOOL inputsReleased;
     BOOL permissionGranted;
     BOOL filterVerified;
     BOOL codexForeground;
-    BOOL recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
-    BOOL neutralEntryPending =
-        [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
-    BOOL recoveryFailed = [recoveryOutcome isEqualToString:@"failure"];
-    if ((!recoverySucceeded && !neutralEntryPending && !recoveryFailed) ||
+    BOOL recoverySucceeded;
+    BOOL neutralEntryPending;
+    BOOL recoveryFailed;
+    if (!muse_on_protocol_read_json_string(
+            event, @"recoveryOutcome", &recoveryOutcome) ||
+        !muse_on_protocol_read_json_string(
+            event, @"recoveryFailure", &recoveryFailure) ||
         !muse_on_protocol_read_json_boolean(
             event, @"inputsReleased", &inputsReleased) ||
         !muse_on_protocol_read_json_boolean(
@@ -1424,6 +1439,14 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
             event, @"filterVerified", &filterVerified) ||
         !muse_on_protocol_read_json_boolean(
             event, @"codexForeground", &codexForeground)) {
+      [self recordListenerProtocolFailure];
+      return;
+    }
+    recoverySucceeded = [recoveryOutcome isEqualToString:@"success"];
+    neutralEntryPending =
+        [recoveryOutcome isEqualToString:@"neutral_entry_pending"];
+    recoveryFailed = [recoveryOutcome isEqualToString:@"failure"];
+    if (!recoverySucceeded && !neutralEntryPending && !recoveryFailed) {
       [self recordListenerProtocolFailure];
       return;
     }
@@ -1455,7 +1478,7 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     self.codexForeground = codexForeground;
     if (recoveryFailed) {
       MuseOnSafetyFailure reportedFailure = [self safetyFailureFromString:
-          event[@"recoveryFailure"]];
+          recoveryFailure];
       self.listenerRecoveryValidated = NO;
       self.listenerSawSafetyLatch = YES;
       if (self.listenerSafetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
@@ -1476,17 +1499,19 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       [self.listenerTask terminate];
     }
   } else if ([name isEqualToString:@"stopped"]) {
+    NSString *safetyReason;
     BOOL releaseFailed;
-    if (!muse_on_protocol_read_json_boolean(
+    if (!muse_on_protocol_read_json_string(
+            event, @"safetyReason", &safetyReason) ||
+        !muse_on_protocol_read_json_boolean(
             event, @"releaseFailed", &releaseFailed)) {
       [self recordListenerProtocolFailure];
       return;
     }
     self.listenerSawStopped = YES;
-    self.listenerCleanupVerified = !releaseFailed &&
-                                   (!safetyReason ||
-                                    [safetyReason isEqualToString:@"none"]);
-    if (safetyReason && ![safetyReason isEqualToString:@"none"]) {
+    self.listenerCleanupVerified =
+        !releaseFailed && [safetyReason isEqualToString:@"none"];
+    if (![safetyReason isEqualToString:@"none"]) {
       self.listenerSafetyFailure = [self safetyFailureFromString:safetyReason];
       self.listenerSawSafetyLatch = YES;
     }
