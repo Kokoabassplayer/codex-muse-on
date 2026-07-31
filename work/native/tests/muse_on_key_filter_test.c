@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "../muse_on_key_filter.h"
 
@@ -56,6 +57,69 @@ static void test_restore_targets_original_registry_entry_not_usb_location(void) 
                                                     UINT64_C(0x100067890)));
   assert(!muse_on_key_filter_restore_target_matches(0,
                                                     UINT64_C(0x100012345)));
+}
+
+static void test_removal_plan_preserves_production_order_and_ownership(void) {
+  const MuseOnKeyFilterOwnership initial = {
+      .location_id = UINT64_C(0x1234),
+      .registry_id = UINT64_C(0x100012345),
+      .restore_pending = true,
+      .active = true,
+  };
+  MuseOnKeyFilterOwnership keyboard_first = initial;
+  MuseOnKeyFilterOwnership joystick_first = initial;
+  MuseOnKeyFilterOwnership replacement = initial;
+
+  assert(muse_on_key_filter_removal_decide(
+             true, &keyboard_first, UINT64_C(0x1234),
+             UINT64_C(0x100012345), false, true) ==
+         MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET);
+  assert(muse_on_key_filter_ownership_confirm_removed(
+      &keyboard_first, UINT64_C(0x1234), UINT64_C(0x100012345)));
+  assert(keyboard_first.location_id == 0);
+  assert(keyboard_first.registry_id == 0);
+  assert(!keyboard_first.restore_pending);
+  assert(!keyboard_first.active);
+
+  /* Joystick-first removal restores through the still-present keyboard. */
+  assert(muse_on_key_filter_removal_decide(
+             false, &joystick_first, UINT64_C(0x1234),
+             UINT64_C(0x200012345), false, true) ==
+         MUSE_ON_KEY_FILTER_REMOVAL_RESTORE_GENERIC);
+  muse_on_key_filter_ownership_clear(&joystick_first);
+  assert(muse_on_key_filter_removal_decide(
+             true, &joystick_first, UINT64_C(0x1234),
+             UINT64_C(0x100012345), false, false) ==
+         MUSE_ON_KEY_FILTER_REMOVAL_NONE);
+
+  /* A replacement at the same USB location never owns the old mapping. */
+  assert(muse_on_key_filter_removal_decide(
+             true, &replacement, UINT64_C(0x1234),
+             UINT64_C(0x100067890), true, true) ==
+         MUSE_ON_KEY_FILTER_REMOVAL_RESTORE_GENERIC);
+  assert(muse_on_key_filter_removal_decide(
+             true, &replacement, UINT64_C(0x4321),
+             UINT64_C(0x100012345), true, true) ==
+         MUSE_ON_KEY_FILTER_REMOVAL_NONE);
+  assert(!muse_on_key_filter_ownership_confirm_removed(
+      &replacement, UINT64_C(0x1234), UINT64_C(0x100067890)));
+  assert(replacement.location_id == initial.location_id);
+  assert(replacement.registry_id == initial.registry_id);
+  assert(replacement.restore_pending && replacement.active);
+  assert(muse_on_key_filter_removal_decide(
+             true, &replacement, UINT64_C(0x1234),
+             UINT64_C(0x100012345), true, true) ==
+         MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET_AND_REAPPLY);
+  assert(muse_on_key_filter_removal_may_reapply(
+      MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET_AND_REAPPLY, true,
+      false));
+  assert(!muse_on_key_filter_removal_may_reapply(
+      MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET_AND_REAPPLY, false,
+      true));
+  assert(!muse_on_key_filter_reapply_failed_terminally(false, true, false));
+  assert(muse_on_key_filter_reapply_failed_terminally(false, false, false));
+  assert(!muse_on_key_filter_reapply_failed_terminally(false, false, true));
+  assert(!muse_on_key_filter_reapply_failed_terminally(true, false, false));
 }
 
 static void test_event_service_resolves_through_exact_device_ancestor(void) {
@@ -243,10 +307,141 @@ static void test_final_restore_attempt_fails_for_present_keyboard(void) {
          MUSE_ON_KEY_FILTER_RESTORE_FAILED);
 }
 
+static void test_apply_policy_bounds_reconnect_service_refresh(void) {
+  MuseOnKeyFilterApplyPolicy policy;
+
+  muse_on_key_filter_apply_policy_init(&policy);
+  assert(muse_on_key_filter_apply_policy_evaluate(
+             &policy, UINT64_C(100),
+             MUSE_ON_KEY_FILTER_APPLY_SERVICE_ABSENT) ==
+         MUSE_ON_KEY_FILTER_APPLY_RETRY);
+  assert(policy.waiting);
+  assert(muse_on_key_filter_apply_policy_evaluate(
+             &policy,
+             UINT64_C(100) + MUSE_ON_KEY_FILTER_APPLY_SETTLEMENT_NS -
+                 UINT64_C(1),
+             MUSE_ON_KEY_FILTER_APPLY_SERVICE_UNCERTAIN) ==
+         MUSE_ON_KEY_FILTER_APPLY_RETRY);
+  assert(muse_on_key_filter_apply_policy_evaluate(
+             &policy,
+             UINT64_C(100) + MUSE_ON_KEY_FILTER_APPLY_SETTLEMENT_NS,
+             MUSE_ON_KEY_FILTER_APPLY_VERIFY_FAILED) ==
+         MUSE_ON_KEY_FILTER_APPLY_FAILED);
+  assert(!policy.waiting);
+
+  assert(muse_on_key_filter_apply_policy_evaluate(
+             &policy, UINT64_C(300),
+             MUSE_ON_KEY_FILTER_APPLY_WRITE_FAILED) ==
+         MUSE_ON_KEY_FILTER_APPLY_RETRY);
+  assert(muse_on_key_filter_apply_policy_evaluate(
+             &policy, UINT64_C(400), MUSE_ON_KEY_FILTER_APPLY_APPLIED) ==
+         MUSE_ON_KEY_FILTER_APPLY_COMPLETE);
+  assert(!policy.waiting);
+  assert(muse_on_key_filter_apply_policy_evaluate(
+             &policy, UINT64_C(500),
+             MUSE_ON_KEY_FILTER_APPLY_ROLLBACK_UNVERIFIED) ==
+         MUSE_ON_KEY_FILTER_APPLY_FAILED);
+  assert(!policy.waiting);
+
+  assert(strcmp(muse_on_key_filter_apply_result_string(
+                    MUSE_ON_KEY_FILTER_APPLY_SERVICE_ABSENT),
+                "apply_keyboard_filter_service_absent") == 0);
+}
+
+typedef struct {
+  void *new_client;
+  void *matched_service;
+  void *released_client;
+  uint64_t expected_location_id;
+  uint64_t expected_registry_id;
+  size_t create_count;
+  size_t find_count;
+  size_t release_count;
+  bool create_succeeds;
+} FakeClientRefresh;
+
+static void *fake_create_client(void *context) {
+  FakeClientRefresh *fake = context;
+  fake->create_count++;
+  return fake->create_succeeds ? fake->new_client : NULL;
+}
+
+static void fake_release_client(void *context, void *client) {
+  FakeClientRefresh *fake = context;
+  fake->release_count++;
+  fake->released_client = client;
+}
+
+static void *fake_find_service(
+    void *context, void *client, uint64_t requested_location_id,
+    uint64_t requested_registry_id, MuseOnKeyFilterLookupResult *lookup_result) {
+  FakeClientRefresh *fake = context;
+  fake->find_count++;
+  if (client == fake->new_client &&
+      requested_location_id == fake->expected_location_id &&
+      requested_registry_id == fake->expected_registry_id) {
+    *lookup_result = MUSE_ON_KEY_FILTER_LOOKUP_MATCHED;
+    return fake->matched_service;
+  }
+  *lookup_result = MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT;
+  return NULL;
+}
+
+static void test_apply_refreshes_stale_client_before_exact_reconnect_lookup(
+    void) {
+  int old_client;
+  int new_client;
+  int replacement_service;
+  void *refreshed_client = NULL;
+  void *matched_service = NULL;
+  MuseOnKeyFilterLookupResult lookup = MUSE_ON_KEY_FILTER_LOOKUP_UNCERTAIN;
+  const MuseOnKeyFilterClientOperations operations = {
+      .create_client = fake_create_client,
+      .release_client = fake_release_client,
+      .find_service = fake_find_service,
+  };
+  FakeClientRefresh fake = {
+      .new_client = &new_client,
+      .matched_service = &replacement_service,
+      .expected_location_id = UINT64_C(0x1234),
+      .expected_registry_id = UINT64_C(0x100067890),
+      .create_succeeds = true,
+  };
+
+  assert(muse_on_key_filter_refresh_and_find_service(
+      &operations, &fake, &old_client, UINT64_C(0x1234),
+      UINT64_C(0x100067890), &refreshed_client, &matched_service, &lookup));
+  assert(fake.create_count == 1);
+  assert(fake.find_count == 1);
+  assert(fake.release_count == 1);
+  assert(fake.released_client == &old_client);
+  assert(refreshed_client == &new_client);
+  assert(matched_service == &replacement_service);
+  assert(lookup == MUSE_ON_KEY_FILTER_LOOKUP_MATCHED);
+
+  fake = (FakeClientRefresh){
+      .new_client = &new_client,
+      .expected_location_id = UINT64_C(0x1234),
+      .expected_registry_id = UINT64_C(0x100067890),
+      .create_succeeds = false,
+  };
+  refreshed_client = &old_client;
+  matched_service = &replacement_service;
+  assert(!muse_on_key_filter_refresh_and_find_service(
+      &operations, &fake, &old_client, UINT64_C(0x1234),
+      UINT64_C(0x100067890), &refreshed_client, &matched_service, &lookup));
+  assert(fake.create_count == 1);
+  assert(fake.find_count == 0);
+  assert(fake.release_count == 0);
+  assert(refreshed_client == NULL);
+  assert(matched_service == NULL);
+}
+
 int main(void) {
   test_sink_mapping_table_is_exact_and_valid();
   test_only_the_exact_muse_on_keyboard_service_matches();
   test_restore_targets_original_registry_entry_not_usb_location();
+  test_removal_plan_preserves_production_order_and_ownership();
   test_event_service_resolves_through_exact_device_ancestor();
   test_lookup_selects_exact_registry_not_reused_usb_location();
   test_lookup_is_uncertain_when_identity_cannot_be_read();
@@ -256,5 +451,7 @@ int main(void) {
   test_restore_settlement_clears_after_verified_restore();
   test_restore_waits_without_deadline_when_keyboard_is_absent();
   test_final_restore_attempt_fails_for_present_keyboard();
+  test_apply_policy_bounds_reconnect_service_refresh();
+  test_apply_refreshes_stale_client_before_exact_reconnect_lookup();
   return 0;
 }

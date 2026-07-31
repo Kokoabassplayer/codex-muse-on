@@ -86,6 +86,7 @@ typedef struct {
   bool codex_foreground;
   bool inputs_released;
   bool filter_verified;
+  bool filter_settling; /* bounded key-filter apply is still in progress */
   bool keyboard_open;
   bool error_observed;
 } MuseOnRecoveryObservation;

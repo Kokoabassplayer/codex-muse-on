@@ -1138,7 +1138,9 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
       strcmp(raw, "rollback_keyboard_filter") == 0 ||
       strcmp(raw, "recover_keyboard_filter") == 0)) {
     error = MUSE_ON_DIAGNOSTIC_ERROR_FILTER_RESTORE;
-  } else if (raw && strcmp(raw, "apply_keyboard_filter") == 0) {
+  } else if (raw &&
+             strncmp(raw, "apply_keyboard_filter",
+                     strlen("apply_keyboard_filter")) == 0) {
     error = MUSE_ON_DIAGNOSTIC_ERROR_FILTER_APPLY;
   } else if (raw && (strcmp(raw, "input_report") == 0 ||
                      strcmp(raw, "invalid_input_report") == 0)) {
@@ -1394,18 +1396,26 @@ static NSScrollView *MuseOnTextEquivalentScrollView(MuseOnProfile profile,
     [self updateCoordinatorWithCommand:MUSE_ON_COMMAND_NONE];
   }
 
-  if ([name isEqualToString:@"action_dispatched"] ||
-      [name isEqualToString:@"action_dispatch_failed"] ||
-      [name isEqualToString:@"action_blocked"]) {
-    for (int value = 0; value < MUSE_ON_ACTION_COUNT; value++) {
-      if ([actionName isEqualToString:@(muse_on_action_id_string(
-                                            (MuseOnActionId)value))]) {
-        muse_on_diagnostics_record_action(&_diagnostics,
-                                          (MuseOnActionId)value);
-        break;
+  {
+    MuseOnDiagnosticActionOutcome actionOutcome;
+    if (muse_on_diagnostic_action_outcome_from_event(name.UTF8String,
+                                                     &actionOutcome)) {
+      NSString *phaseName = event[@"phase"];
+      MuseOnActionId actionId;
+      MuseOnActionPhase actionPhase;
+      if (![actionName isKindOfClass:[NSString class]] ||
+          ![phaseName isKindOfClass:[NSString class]] ||
+          !muse_on_action_id_from_string(actionName.UTF8String, &actionId) ||
+          !muse_on_action_phase_from_string(phaseName.UTF8String,
+                                            &actionPhase) ||
+          !muse_on_diagnostics_record_action(
+              &_diagnostics, actionId, actionPhase, actionOutcome)) {
+        [self recordListenerProtocolFailure];
       }
+      return;
     }
-  } else if ([name isEqualToString:@"error"]) {
+  }
+  if ([name isEqualToString:@"error"]) {
     NSNumber *code = [event[@"code"] isKindOfClass:[NSNumber class]]
                          ? event[@"code"] : nil;
     [self recordListenerError:operation code:code];

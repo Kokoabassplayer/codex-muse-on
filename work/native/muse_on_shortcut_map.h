@@ -39,8 +39,16 @@ typedef struct {
   MuseOnShortcutOperation operation;
 } MuseOnShortcutInstruction;
 
+typedef enum {
+  MUSE_ON_SHORTCUT_DISPATCH_POST = 0,
+  MUSE_ON_SHORTCUT_DISPATCH_IGNORE_DUPLICATE_HOLD_BEGIN,
+  MUSE_ON_SHORTCUT_DISPATCH_IGNORE_ORPHAN_HOLD_END
+} MuseOnShortcutDispatchDecision;
+
 bool muse_on_shortcut_map(const MuseOnActionEvent *action,
                           MuseOnShortcutInstruction *shortcut);
+MuseOnShortcutDispatchDecision muse_on_shortcut_dispatch_decide(
+    const MuseOnActionEvent *action, bool synthetic_hold_down);
 const char *muse_on_shortcut_key_string(MuseOnShortcutKey key);
 const char *muse_on_shortcut_operation_string(MuseOnShortcutOperation operation);
 

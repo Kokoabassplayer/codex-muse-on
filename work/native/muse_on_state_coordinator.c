@@ -152,6 +152,13 @@ MuseOnRecoveryDecision muse_on_recovery_policy_evaluate(
       !observation.inputs_released) {
     return MUSE_ON_RECOVERY_WAIT;
   }
+  /* The apply policy owns this bounded deadline. Transient service discovery
+   * must not poison or prematurely fail recovery. */
+  if (observation.filter_settling && observation.permission_granted &&
+      observation.controller_connected && !observation.multiple_controllers &&
+      observation.keyboard_open && !observation.error_observed) {
+    return MUSE_ON_RECOVERY_WAIT;
+  }
   if (elapsed_ns >= MUSE_ON_RECOVERY_SETTLEMENT_NS) {
     policy->emitted = true;
     return MUSE_ON_RECOVERY_FAILURE;

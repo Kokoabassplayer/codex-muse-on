@@ -221,3 +221,9 @@ bool muse_on_listener_lifecycle_is_bound_to(
   return lifecycle && lifecycle->bound && lifecycle->profile == profile &&
          lifecycle->controller_location_id == controller_location_id;
 }
+
+bool muse_on_listener_runtime_allows_route(bool stop_requested,
+                                           bool release_failed,
+                                           bool safety_failure_present) {
+  return !stop_requested && !release_failed && !safety_failure_present;
+}

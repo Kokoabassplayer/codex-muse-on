@@ -34,19 +34,70 @@ static void test_diagnostics_contain_only_safe_identifiers(void) {
       &diagnostics, MUSE_ON_STATUS_SAFETY_LATCH,
       MUSE_ON_INACTIVE_REASON_SAFETY_LATCH,
       MUSE_ON_SAFETY_FAILURE_PASSTHROUGH_RESTORE);
-  muse_on_diagnostics_record_action(
-      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
+  assert(muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+      MUSE_ON_ACTION_BEGIN, MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED));
   muse_on_diagnostics_record_error(
       &diagnostics, MUSE_ON_DIAGNOSTIC_ERROR_FILTER_RESTORE);
   assert(muse_on_diagnostics_copy(&diagnostics, output, sizeof(output)) > 0);
   assert(strstr(output, "state safety_latch") != NULL);
   assert(strstr(output, "pass_through_restoration_failed") != NULL);
-  assert(strstr(output, "action globalDictationHold") != NULL);
+  assert(strstr(output,
+                "action globalDictationHold phase=begin outcome=dispatched") !=
+         NULL);
   assert(strstr(output, "error filter_restore") != NULL);
   assert(strstr(output, "bytesHex") == NULL);
   assert(strstr(output, "typed") == NULL);
   assert(strstr(output, "chat") == NULL);
   assert(strstr(output, "window") == NULL);
+}
+
+static void test_action_diagnostics_distinguish_hold_phase_and_outcome(void) {
+  MuseOnDiagnostics diagnostics;
+  char output[4096];
+
+  muse_on_diagnostics_init(&diagnostics);
+  assert(muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+      MUSE_ON_ACTION_BEGIN, MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED));
+  assert(muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+      MUSE_ON_ACTION_END, MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED));
+  assert(muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_COMPOSER_SUBMIT,
+      MUSE_ON_ACTION_TRIGGER, MUSE_ON_DIAGNOSTIC_ACTION_BLOCKED));
+  assert(!muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_COMPOSER_SUBMIT,
+      MUSE_ON_ACTION_END, MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED));
+  assert(!muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+      MUSE_ON_ACTION_TRIGGER, MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED));
+  assert(muse_on_diagnostics_copy(&diagnostics, output, sizeof(output)) > 0);
+  assert(strstr(output,
+                "action globalDictationHold phase=begin outcome=dispatched") !=
+         NULL);
+  assert(strstr(output,
+                "action globalDictationHold phase=end outcome=dispatched") !=
+         NULL);
+  assert(strstr(output,
+                "action composer.submit phase=trigger outcome=blocked") !=
+         NULL);
+}
+
+static void test_action_diagnostics_parse_protocol_events_once(void) {
+  MuseOnDiagnosticActionOutcome outcome;
+
+  assert(muse_on_diagnostic_action_outcome_from_event(
+      "action_dispatched", &outcome));
+  assert(outcome == MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED);
+  assert(muse_on_diagnostic_action_outcome_from_event(
+      "action_dispatch_failed", &outcome));
+  assert(outcome == MUSE_ON_DIAGNOSTIC_ACTION_FAILED);
+  assert(muse_on_diagnostic_action_outcome_from_event(
+      "action_blocked", &outcome));
+  assert(outcome == MUSE_ON_DIAGNOSTIC_ACTION_BLOCKED);
+  assert(!muse_on_diagnostic_action_outcome_from_event("action_unknown",
+                                                        &outcome));
 }
 
 static void test_diagnostics_copy_is_bounded_and_nul_terminated(void) {
@@ -129,8 +180,9 @@ static void test_listener_details_are_bounded_and_reset_without_losing_history(v
       &diagnostics, MUSE_ON_STATUS_SAFETY_LATCH,
       MUSE_ON_INACTIVE_REASON_SAFETY_LATCH,
       MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
-  muse_on_diagnostics_record_action(
-      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
+  assert(muse_on_diagnostics_record_action(
+      &diagnostics, MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+      MUSE_ON_ACTION_END, MUSE_ON_DIAGNOSTIC_ACTION_FAILED));
   muse_on_diagnostics_record_listener_error(
       &diagnostics, "/private/user/controller", INT64_MAX);
   muse_on_diagnostics_record_listener_termination(
@@ -164,7 +216,8 @@ static void test_listener_details_are_bounded_and_reset_without_losing_history(v
   assert(muse_on_diagnostics_count(&diagnostics) == 2);
   assert(muse_on_diagnostics_copy(&diagnostics, output, sizeof(output)) > 0);
   assert(strstr(output, "state safety_latch") != NULL);
-  assert(strstr(output, "action globalDictationHold") != NULL);
+  assert(strstr(output,
+                "action globalDictationHold phase=end outcome=failed") != NULL);
   assert(strstr(output, "listener_error") == NULL);
   assert(strstr(output, "listener_termination") == NULL);
   assert(muse_on_diagnostics_copy_listener_reason(
@@ -175,6 +228,8 @@ static void test_listener_details_are_bounded_and_reset_without_losing_history(v
 int main(void) {
   test_diagnostics_are_bounded_and_keep_recent_entries();
   test_diagnostics_contain_only_safe_identifiers();
+  test_action_diagnostics_distinguish_hold_phase_and_outcome();
+  test_action_diagnostics_parse_protocol_events_once();
   test_diagnostics_copy_is_bounded_and_nul_terminated();
   test_listener_startup_details_preserve_known_and_unknown_errors();
   test_listener_error_survives_ready_and_failed_recovery();

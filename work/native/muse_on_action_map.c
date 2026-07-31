@@ -1,5 +1,7 @@
 #include "muse_on_action_map.h"
 
+#include <string.h>
+
 typedef struct {
   const char *identifier;
   const char *display_name;
@@ -79,7 +81,8 @@ static const MuseOnControlMapping kControlMap[] = {
       TRIGGER_PROFILE(MUSE_ON_ACTION_FORK_THREAD)}},
     {"black6", "Black button 6", MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
      MUSE_ON_CONTROL_SHAPE_BUTTON, 0.686667f, 0.193694f, 0.086667f, 0.139640f,
-     MUSE_ON_EVENT_BLACK6_DOWN, MUSE_ON_EVENT_BLACK6_UP, 20000000ULL, false,
+     MUSE_ON_EVENT_BLACK6_DOWN, MUSE_ON_EVENT_BLACK6_UP,
+     MUSE_ON_SUBMIT_DEBOUNCE_NS, false,
      {TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_SUBMIT),
       TRIGGER_PROFILE(MUSE_ON_ACTION_COMPOSER_SUBMIT)}},
     {"black8", "Black button 8", MUSE_ON_CONTROL_GROUP_BLACK_BUTTONS,
@@ -518,6 +521,21 @@ const char *muse_on_action_phase_string(MuseOnActionPhase phase) {
   return "unknown";
 }
 
+bool muse_on_action_phase_from_string(const char *value,
+                                      MuseOnActionPhase *phase) {
+  MuseOnActionPhase candidate;
+
+  if (!value || !phase) return false;
+  for (candidate = MUSE_ON_ACTION_TRIGGER; candidate <= MUSE_ON_ACTION_END;
+       candidate++) {
+    if (strcmp(value, muse_on_action_phase_string(candidate)) == 0) {
+      *phase = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
 const char *muse_on_action_phase_prompt(MuseOnActionPhase phase) {
   switch (phase) {
     case MUSE_ON_ACTION_TRIGGER: return "Press to trigger";
@@ -530,6 +548,31 @@ const char *muse_on_action_phase_prompt(MuseOnActionPhase phase) {
 const char *muse_on_action_id_string(MuseOnActionId action) {
   if ((unsigned int)action >= MUSE_ON_ACTION_COUNT) return "unknown";
   return kActionInfo[action].identifier;
+}
+
+bool muse_on_action_id_from_string(const char *value, MuseOnActionId *action) {
+  unsigned int index;
+
+  if (!value || !action) return false;
+  for (index = 0; index < MUSE_ON_ACTION_COUNT; index++) {
+    if (strcmp(value, muse_on_action_id_string((MuseOnActionId)index)) == 0) {
+      *action = (MuseOnActionId)index;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool muse_on_action_phase_valid(MuseOnActionId action,
+                                MuseOnActionPhase phase) {
+  if ((unsigned int)action >= MUSE_ON_ACTION_COUNT ||
+      (unsigned int)phase > MUSE_ON_ACTION_END) {
+    return false;
+  }
+  if (action == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD) {
+    return phase == MUSE_ON_ACTION_BEGIN || phase == MUSE_ON_ACTION_END;
+  }
+  return phase == MUSE_ON_ACTION_TRIGGER;
 }
 
 const char *muse_on_action_display_name(MuseOnActionId action) {

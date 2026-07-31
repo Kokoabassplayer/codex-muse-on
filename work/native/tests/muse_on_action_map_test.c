@@ -162,6 +162,8 @@ static void test_stable_strings(void) {
       {MUSE_ON_ACTION_COMPOSER_OPEN_MODEL_PICKER, "composer.openModelPicker"},
   };
   size_t index;
+  MuseOnActionId parsed_action;
+  MuseOnActionPhase parsed_phase;
 
   assert(strcmp(muse_on_profile_string(MUSE_ON_PROFILE_CONTROLLER_ONLY),
                 "controller_only") == 0);
@@ -169,11 +171,33 @@ static void test_stable_strings(void) {
   for (index = 0; index < sizeof(actions) / sizeof(actions[0]); index++) {
     assert(strcmp(muse_on_action_id_string(actions[index].id),
                   actions[index].name) == 0);
+    assert(muse_on_action_id_from_string(actions[index].name, &parsed_action));
+    assert(parsed_action == actions[index].id);
   }
   assert(strcmp(muse_on_action_phase_string(MUSE_ON_ACTION_TRIGGER),
                 "trigger") == 0);
   assert(strcmp(muse_on_action_phase_string(MUSE_ON_ACTION_BEGIN), "begin") == 0);
   assert(strcmp(muse_on_action_phase_string(MUSE_ON_ACTION_END), "end") == 0);
+  assert(muse_on_action_phase_from_string("trigger", &parsed_phase));
+  assert(parsed_phase == MUSE_ON_ACTION_TRIGGER);
+  assert(muse_on_action_phase_from_string("begin", &parsed_phase));
+  assert(parsed_phase == MUSE_ON_ACTION_BEGIN);
+  assert(muse_on_action_phase_from_string("end", &parsed_phase));
+  assert(parsed_phase == MUSE_ON_ACTION_END);
+  assert(!muse_on_action_id_from_string("unknown", &parsed_action));
+  assert(!muse_on_action_phase_from_string("unknown", &parsed_phase));
+  assert(!muse_on_action_id_from_string(NULL, &parsed_action));
+  assert(!muse_on_action_phase_from_string(NULL, &parsed_phase));
+  assert(muse_on_action_phase_valid(MUSE_ON_ACTION_COMPOSER_SUBMIT,
+                                    MUSE_ON_ACTION_TRIGGER));
+  assert(!muse_on_action_phase_valid(MUSE_ON_ACTION_COMPOSER_SUBMIT,
+                                     MUSE_ON_ACTION_END));
+  assert(muse_on_action_phase_valid(MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+                                    MUSE_ON_ACTION_BEGIN));
+  assert(muse_on_action_phase_valid(MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+                                    MUSE_ON_ACTION_END));
+  assert(!muse_on_action_phase_valid(MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+                                     MUSE_ON_ACTION_TRIGGER));
   assert(strcmp(muse_on_event_name_string(MUSE_ON_EVENT_BLACK6_DOWN),
                 "black6.down") == 0);
 }
@@ -292,24 +316,55 @@ static void test_turntable_direction_repeats_until_released(void) {
 static void test_pedal_hold_bounce_requires_stable_begin_and_end(void) {
   MuseOnActionRouter router;
   MuseOnActionEvent action;
+  uint64_t tick_ns;
 
   muse_on_action_router_init(&router, MUSE_ON_PROFILE_PEDAL);
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
                                       1000000000ULL, &action));
+  for (tick_ns = 1010000000ULL; tick_ns <= 1020000000ULL;
+       tick_ns += 10000000ULL) {
+    assert(!muse_on_action_router_tick(&router, tick_ns, &action));
+  }
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_UP,
-                                      1010000000ULL, &action));
+                                      1030000000ULL, &action));
+  for (tick_ns = 1040000000ULL; tick_ns <= 1050000000ULL;
+       tick_ns += 10000000ULL) {
+    assert(!muse_on_action_router_tick(&router, tick_ns, &action));
+  }
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
-                                      1020000000ULL, &action));
-  assert(!muse_on_action_router_tick(&router, 1039999999ULL, &action));
-  assert(muse_on_action_router_tick(&router, 1040000000ULL, &action));
+                                      1060000000ULL, &action));
+  for (tick_ns = 1070000000ULL; tick_ns <= 1080000000ULL;
+       tick_ns += 10000000ULL) {
+    assert(!muse_on_action_router_tick(&router, tick_ns, &action));
+  }
+  assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_UP,
+                                      1090000000ULL, &action));
+  for (tick_ns = 1100000000ULL; tick_ns <= 1110000000ULL;
+       tick_ns += 10000000ULL) {
+    assert(!muse_on_action_router_tick(&router, tick_ns, &action));
+  }
+  assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
+                                      1120000000ULL, &action));
+  for (tick_ns = 1130000000ULL;
+       tick_ns < 1120000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS;
+       tick_ns += 10000000ULL) {
+    assert(!muse_on_action_router_tick(&router, tick_ns, &action));
+  }
+  assert(muse_on_action_router_tick(
+      &router, 1120000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS, &action));
   assert(action.id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
   assert(action.phase == MUSE_ON_ACTION_BEGIN);
   assert(action.source == MUSE_ON_EVENT_PEDAL_DOWN);
 
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_UP,
-                                      1200000000ULL, &action));
-  assert(!muse_on_action_router_tick(&router, 1219999999ULL, &action));
-  assert(muse_on_action_router_tick(&router, 1220000000ULL, &action));
+                                      1400000000ULL, &action));
+  for (tick_ns = 1410000000ULL;
+       tick_ns < 1400000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS;
+       tick_ns += 10000000ULL) {
+    assert(!muse_on_action_router_tick(&router, tick_ns, &action));
+  }
+  assert(muse_on_action_router_tick(
+      &router, 1400000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS, &action));
   assert(action.phase == MUSE_ON_ACTION_END);
   assert(action.source == MUSE_ON_EVENT_PEDAL_UP);
 }
@@ -333,18 +388,19 @@ static void test_hold_duplicate_begin_and_repress_cancel_pending_release(void) {
   muse_on_action_router_init(&router, MUSE_ON_PROFILE_PEDAL);
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
                                       1000000000ULL, &action));
-  assert(muse_on_action_router_tick(&router, 1020000000ULL, &action));
+  assert(muse_on_action_router_tick(
+      &router, 1000000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS, &action));
   assert(action.phase == MUSE_ON_ACTION_BEGIN);
 
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
-                                      1030000000ULL, &action));
-  assert(!muse_on_action_router_tick(&router, 1050000000ULL, &action));
+                                      1100000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1180000000ULL, &action));
 
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_UP,
-                                      1060000000ULL, &action));
+                                      1200000000ULL, &action));
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
-                                      1070000000ULL, &action));
-  assert(!muse_on_action_router_tick(&router, 1100000000ULL, &action));
+                                      1230000000ULL, &action));
+  assert(!muse_on_action_router_tick(&router, 1310000000ULL, &action));
 }
 
 static void test_hold_timestamp_regression_cannot_emit(void) {
@@ -355,8 +411,34 @@ static void test_hold_timestamp_regression_cannot_emit(void) {
   assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_PEDAL_DOWN,
                                       1000000000ULL, &action));
   assert(!muse_on_action_router_tick(&router, 999999999ULL, &action));
-  assert(muse_on_action_router_tick(&router, 1020000000ULL, &action));
+  assert(muse_on_action_router_tick(
+      &router, 1000000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS, &action));
   assert(action.phase == MUSE_ON_ACTION_BEGIN);
+}
+
+static void test_submit_switch_bounce_dispatches_once_per_deliberate_press(void) {
+  MuseOnActionRouter router;
+  MuseOnActionEvent action;
+
+  muse_on_action_router_init(&router, MUSE_ON_PROFILE_PEDAL);
+  assert(muse_on_action_router_route(&router, MUSE_ON_EVENT_BLACK6_DOWN,
+                                     1000000000ULL, &action));
+  assert(action.id == MUSE_ON_ACTION_COMPOSER_SUBMIT);
+  assert(action.phase == MUSE_ON_ACTION_TRIGGER);
+  assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_BLACK6_UP,
+                                      1050000000ULL, &action));
+  assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_BLACK6_DOWN,
+                                      1100000000ULL, &action));
+  assert(!muse_on_action_router_route(&router, MUSE_ON_EVENT_BLACK6_UP,
+                                      1150000000ULL, &action));
+  assert(!muse_on_action_router_route(
+      &router, MUSE_ON_EVENT_BLACK6_DOWN,
+      1000000000ULL + MUSE_ON_SUBMIT_DEBOUNCE_NS - 1, &action));
+  assert(muse_on_action_router_route(&router, MUSE_ON_EVENT_BLACK6_DOWN,
+                                     1000000000ULL +
+                                         MUSE_ON_SUBMIT_DEBOUNCE_NS,
+                                     &action));
+  assert(action.id == MUSE_ON_ACTION_COMPOSER_SUBMIT);
 }
 
 int main(void) {
@@ -371,5 +453,6 @@ int main(void) {
   test_hold_pending_begin_is_cancelled_by_release();
   test_hold_duplicate_begin_and_repress_cancel_pending_release();
   test_hold_timestamp_regression_cannot_emit();
+  test_submit_switch_bounce_dispatches_once_per_deliberate_press();
   return 0;
 }

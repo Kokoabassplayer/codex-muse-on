@@ -701,6 +701,56 @@ static void test_disable_pending_resolves_to_disabled_after_retry(void) {
   assert(state.enabled_intent == false);
 }
 
+/* Normal asynchronous cleanup may show a fail-closed transition while the
+ * listener stops, then complete Disabled only after cleanup is verified. */
+static void test_disable_cleanup_completion_is_verified_before_disabled(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  p.cleanup_verified = false;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_DISABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.safety_failure == MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+  assert(state.disable_pending);
+  assert(!state.effects.request_dispatch);
+
+  p.cleanup_verified = true;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_DISABLE, p);
+  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(!state.disable_pending);
+  assert(!state.effects.request_dispatch);
+}
+
+/* A real named uncertainty cannot auto-clear merely because a later ordinary
+ * observation looks clean; explicit Retry remains mandatory. */
+static void test_uncertain_disable_stays_latched_until_retry(void) {
+  MuseOnState state;
+  MuseOnPrerequisites p = all_clear();
+
+  muse_on_state_init(&state);
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_ENABLE, p);
+  p.cleanup_verified = false;
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_DISABLE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.disable_pending);
+  assert(!state.effects.request_dispatch);
+
+  p.cleanup_verified = true;
+  p.safety_failure = MUSE_ON_SAFETY_FAILURE_NONE;
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_NONE, p);
+  assert(state.status == MUSE_ON_STATUS_SAFETY_LATCH);
+  assert(state.disable_pending);
+  assert(!state.effects.request_dispatch);
+
+  muse_on_state_apply(&state, MUSE_ON_COMMAND_RETRY, p);
+  assert(state.status == MUSE_ON_STATUS_DISABLED);
+  assert(!state.disable_pending);
+  assert(!state.effects.request_dispatch);
+}
+
 /* A prior process without Safe Quit must not resume Active automatically. */
 static void test_unclean_prior_exit_latches_next_launch(void) {
   MuseOnState state;
@@ -879,6 +929,46 @@ static void test_recovery_policy_accepts_background_safety_proof(void) {
          MUSE_ON_RECOVERY_SUCCESS);
 }
 
+static void test_recovery_waits_for_bounded_filter_apply_policy(void) {
+  MuseOnRecoveryPolicy policy;
+  MuseOnRecoveryObservation observation = {
+      .permission_granted = true,
+      .controller_connected = true,
+      .multiple_controllers = false,
+      .inputs_released = true,
+      .filter_verified = false,
+      .filter_settling = true,
+      .keyboard_open = true,
+      .error_observed = false,
+  };
+
+  muse_on_recovery_policy_init(&policy, 100);
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 100 + MUSE_ON_RECOVERY_SETTLEMENT_NS + 1,
+             observation) == MUSE_ON_RECOVERY_WAIT);
+
+  observation.filter_settling = false;
+  observation.filter_verified = true;
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 100 + MUSE_ON_RECOVERY_SETTLEMENT_NS * UINT64_C(2),
+             observation) == MUSE_ON_RECOVERY_SUCCESS);
+
+  muse_on_recovery_policy_init(&policy, 200);
+  observation.filter_verified = false;
+  observation.error_observed = true;
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 200 + MUSE_ON_RECOVERY_SETTLEMENT_NS * UINT64_C(2),
+             observation) == MUSE_ON_RECOVERY_FAILURE);
+
+  muse_on_recovery_policy_init(&policy, 300);
+  observation.error_observed = false;
+  observation.filter_settling = true;
+  observation.permission_granted = false;
+  assert(muse_on_recovery_policy_evaluate(
+             &policy, 300 + MUSE_ON_RECOVERY_SETTLEMENT_NS,
+             observation) == MUSE_ON_RECOVERY_FAILURE);
+}
+
 /* A stalled recovery fails once at the bounded deadline and stays fail-closed. */
 static void test_recovery_policy_timeout_is_fail_closed(void) {
   MuseOnRecoveryPolicy policy;
@@ -1019,6 +1109,8 @@ int main(void) {
   test_unclean_recovery_rejects_failed_cleanup_and_gates();
   test_recovery_filter_restoration_order();
   test_disable_pending_resolves_to_disabled_after_retry();
+  test_disable_cleanup_completion_is_verified_before_disabled();
+  test_uncertain_disable_stays_latched_until_retry();
   test_unclean_prior_exit_latches_next_launch();
   test_ordinary_gates_auto_recover_without_latch();
   test_safe_quit_requires_verified_cleanup();
@@ -1026,6 +1118,7 @@ int main(void) {
   test_retry_enters_release_controls_after_cleanup();
   test_recovery_policy_settles_before_emitting();
   test_recovery_policy_accepts_background_safety_proof();
+  test_recovery_waits_for_bounded_filter_apply_policy();
   test_recovery_policy_timeout_is_fail_closed();
   test_recovery_outcome_protocol_is_typed_and_truthful();
   test_status_strings();

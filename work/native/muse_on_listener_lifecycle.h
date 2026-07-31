@@ -69,5 +69,8 @@ bool muse_on_listener_lifecycle_is_foreground(
 bool muse_on_listener_lifecycle_is_bound_to(
     const MuseOnListenerLifecycle *lifecycle, MuseOnProfile profile,
     uint32_t controller_location_id);
+bool muse_on_listener_runtime_allows_route(bool stop_requested,
+                                           bool release_failed,
+                                           bool safety_failure_present);
 
 #endif

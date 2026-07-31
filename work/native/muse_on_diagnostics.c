@@ -67,10 +67,35 @@ void muse_on_diagnostics_record_state(MuseOnDiagnostics *diagnostics,
               muse_on_safety_failure_string(failure));
 }
 
-void muse_on_diagnostics_record_action(MuseOnDiagnostics *diagnostics,
-                                        MuseOnActionId action) {
-  record_line(diagnostics, "action %s", muse_on_action_id_string(action),
-              NULL, NULL);
+bool muse_on_diagnostic_action_outcome_from_event(
+    const char *event, MuseOnDiagnosticActionOutcome *outcome) {
+  if (!event || !outcome) return false;
+  if (strcmp(event, "action_dispatched") == 0) {
+    *outcome = MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED;
+  } else if (strcmp(event, "action_dispatch_failed") == 0) {
+    *outcome = MUSE_ON_DIAGNOSTIC_ACTION_FAILED;
+  } else if (strcmp(event, "action_blocked") == 0) {
+    *outcome = MUSE_ON_DIAGNOSTIC_ACTION_BLOCKED;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool muse_on_diagnostics_record_action(MuseOnDiagnostics *diagnostics,
+                                       MuseOnActionId action,
+                                       MuseOnActionPhase phase,
+                                       MuseOnDiagnosticActionOutcome outcome) {
+  static const char *const outcomes[] = {"dispatched", "failed", "blocked"};
+
+  if (!diagnostics || !muse_on_action_phase_valid(action, phase) ||
+      (unsigned int)outcome >= sizeof(outcomes) / sizeof(outcomes[0])) {
+    return false;
+  }
+  record_line(diagnostics, "action %s phase=%s outcome=%s",
+              muse_on_action_id_string(action),
+              muse_on_action_phase_string(phase), outcomes[outcome]);
+  return true;
 }
 
 void muse_on_diagnostics_record_error(MuseOnDiagnostics *diagnostics,

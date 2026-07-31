@@ -86,8 +86,10 @@ muse_on_config_test: muse_on_config.c tests/muse_on_config_test.c muse_on_config
 muse_on_activation_test: muse_on_activation.c tests/muse_on_activation_test.c muse_on_activation.h muse_on_config.h
 	$(CC) $(CFLAGS) -I. muse_on_activation.c tests/muse_on_activation_test.c -o $@
 
-muse_on_shortcut_map_test: muse_on_shortcut_map.c tests/muse_on_shortcut_map_test.c muse_on_shortcut_map.h muse_on_action_map.h
-	$(CC) $(CFLAGS) -I. muse_on_shortcut_map.c tests/muse_on_shortcut_map_test.c -o $@
+muse_on_shortcut_map_test: muse_on_shortcut_map.c muse_on_action_map.c \
+		tests/muse_on_shortcut_map_test.c muse_on_shortcut_map.h muse_on_action_map.h
+	$(CC) $(CFLAGS) -I. muse_on_shortcut_map.c muse_on_action_map.c \
+		tests/muse_on_shortcut_map_test.c -o $@
 
 muse_on_platform_test: muse_on_platform.m tests/muse_on_platform_test.m muse_on_platform.h muse_on_shortcut_map.h
 	$(CC) $(CFLAGS) -I. muse_on_platform.m tests/muse_on_platform_test.m \

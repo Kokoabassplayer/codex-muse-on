@@ -27,19 +27,18 @@ bool muse_on_shortcut_map(const MuseOnActionEvent *action,
   MuseOnShortcutKey key;
   MuseOnShortcutOperation operation;
 
-  if (!action || !shortcut || !shortcut_key_for_action(action->id, &key)) {
+  if (!action || !shortcut ||
+      !muse_on_action_phase_valid(action->id, action->phase) ||
+      !shortcut_key_for_action(action->id, &key)) {
     return false;
   }
   if (action->id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD) {
     if (action->phase == MUSE_ON_ACTION_BEGIN) {
       operation = MUSE_ON_SHORTCUT_KEY_DOWN;
-    } else if (action->phase == MUSE_ON_ACTION_END) {
-      operation = MUSE_ON_SHORTCUT_KEY_UP;
     } else {
-      return false;
+      operation = MUSE_ON_SHORTCUT_KEY_UP;
     }
   } else {
-    if (action->phase != MUSE_ON_ACTION_TRIGGER) return false;
     operation = MUSE_ON_SHORTCUT_TAP;
   }
   shortcut->command = true;
@@ -49,6 +48,20 @@ bool muse_on_shortcut_map(const MuseOnActionEvent *action,
   shortcut->key = key;
   shortcut->operation = operation;
   return true;
+}
+
+MuseOnShortcutDispatchDecision muse_on_shortcut_dispatch_decide(
+    const MuseOnActionEvent *action, bool synthetic_hold_down) {
+  if (!action || action->id != MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD) {
+    return MUSE_ON_SHORTCUT_DISPATCH_POST;
+  }
+  if (action->phase == MUSE_ON_ACTION_BEGIN && synthetic_hold_down) {
+    return MUSE_ON_SHORTCUT_DISPATCH_IGNORE_DUPLICATE_HOLD_BEGIN;
+  }
+  if (action->phase == MUSE_ON_ACTION_END && !synthetic_hold_down) {
+    return MUSE_ON_SHORTCUT_DISPATCH_IGNORE_ORPHAN_HOLD_END;
+  }
+  return MUSE_ON_SHORTCUT_DISPATCH_POST;
 }
 
 const char *muse_on_shortcut_key_string(MuseOnShortcutKey key) {

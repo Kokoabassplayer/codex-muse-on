@@ -21,11 +21,8 @@ enum {
 struct MuseOnKeyFilter {
   IOHIDEventSystemClientRef client;
   CFTypeRef original_mapping;
-  uint64_t active_location_id;
-  uint64_t active_registry_id;
   bool original_mapping_was_null;
-  bool restore_pending;
-  bool active;
+  MuseOnKeyFilterOwnership ownership;
 };
 
 const MuseOnKeyFilterMapping muse_on_key_filter_mappings[] = {
@@ -82,6 +79,59 @@ bool muse_on_key_filter_service_matches(uint32_t vendor_id, uint32_t product_id,
 bool muse_on_key_filter_restore_target_matches(uint64_t saved_registry_id,
                                                uint64_t candidate_registry_id) {
   return saved_registry_id != 0 && saved_registry_id == candidate_registry_id;
+}
+
+MuseOnKeyFilterRemovalDecision muse_on_key_filter_removal_decide(
+    bool keyboard_removed, const MuseOnKeyFilterOwnership *ownership,
+    uint64_t removed_location_id, uint64_t removed_registry_id,
+    bool controller_topology_valid, bool filter_applied) {
+  if (keyboard_removed && ownership && ownership->restore_pending &&
+      ownership->location_id != 0 && ownership->registry_id != 0 &&
+      ownership->location_id == removed_location_id &&
+      ownership->registry_id == removed_registry_id) {
+    return controller_topology_valid
+               ? MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET_AND_REAPPLY
+               : MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET;
+  }
+  if (filter_applied && !controller_topology_valid) {
+    return MUSE_ON_KEY_FILTER_REMOVAL_RESTORE_GENERIC;
+  }
+  if (keyboard_removed && ownership && ownership->restore_pending &&
+      ownership->location_id != 0 &&
+      ownership->location_id == removed_location_id) {
+    return MUSE_ON_KEY_FILTER_REMOVAL_RESTORE_GENERIC;
+  }
+  return MUSE_ON_KEY_FILTER_REMOVAL_NONE;
+}
+
+bool muse_on_key_filter_ownership_confirm_removed(
+    MuseOnKeyFilterOwnership *ownership, uint64_t removed_location_id,
+    uint64_t removed_registry_id) {
+  MuseOnKeyFilterRemovalDecision decision =
+      muse_on_key_filter_removal_decide(true, ownership, removed_location_id,
+                                       removed_registry_id, false, false);
+  if (decision != MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET) {
+    return false;
+  }
+  muse_on_key_filter_ownership_clear(ownership);
+  return true;
+}
+
+void muse_on_key_filter_ownership_clear(MuseOnKeyFilterOwnership *ownership) {
+  if (ownership) *ownership = (MuseOnKeyFilterOwnership){0};
+}
+
+bool muse_on_key_filter_removal_may_reapply(
+    MuseOnKeyFilterRemovalDecision decision, bool hold_release_succeeded,
+    bool release_failed) {
+  return decision ==
+             MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET_AND_REAPPLY &&
+         hold_release_succeeded && !release_failed;
+}
+
+bool muse_on_key_filter_reapply_failed_terminally(
+    bool filter_applied, bool apply_settling, bool safety_failure_present) {
+  return !filter_applied && !apply_settling && !safety_failure_present;
 }
 
 bool muse_on_key_filter_registry_chain_contains(
@@ -193,6 +243,89 @@ MuseOnKeyFilterRestoreDecision muse_on_key_filter_restore_policy_evaluate(
     return MUSE_ON_KEY_FILTER_RESTORE_FAILED;
   }
   return MUSE_ON_KEY_FILTER_RESTORE_RETRY;
+}
+
+void muse_on_key_filter_apply_policy_init(MuseOnKeyFilterApplyPolicy *policy) {
+  if (!policy) return;
+  policy->waiting = false;
+  policy->started_at_ns = 0;
+}
+
+MuseOnKeyFilterApplyDecision muse_on_key_filter_apply_policy_evaluate(
+    MuseOnKeyFilterApplyPolicy *policy, uint64_t now_ns,
+    MuseOnKeyFilterApplyResult result) {
+  if (!policy) return MUSE_ON_KEY_FILTER_APPLY_FAILED;
+  if (result == MUSE_ON_KEY_FILTER_APPLY_APPLIED) {
+    muse_on_key_filter_apply_policy_init(policy);
+    return MUSE_ON_KEY_FILTER_APPLY_COMPLETE;
+  }
+  if (result == MUSE_ON_KEY_FILTER_APPLY_ROLLBACK_UNVERIFIED ||
+      result == MUSE_ON_KEY_FILTER_APPLY_FATAL) {
+    muse_on_key_filter_apply_policy_init(policy);
+    return MUSE_ON_KEY_FILTER_APPLY_FAILED;
+  }
+  if (!policy->waiting) {
+    policy->waiting = true;
+    policy->started_at_ns = now_ns;
+    return MUSE_ON_KEY_FILTER_APPLY_RETRY;
+  }
+  if (now_ns < policy->started_at_ns ||
+      now_ns - policy->started_at_ns >=
+          MUSE_ON_KEY_FILTER_APPLY_SETTLEMENT_NS) {
+    muse_on_key_filter_apply_policy_init(policy);
+    return MUSE_ON_KEY_FILTER_APPLY_FAILED;
+  }
+  return MUSE_ON_KEY_FILTER_APPLY_RETRY;
+}
+
+const char *muse_on_key_filter_apply_result_string(
+    MuseOnKeyFilterApplyResult result) {
+  switch (result) {
+    case MUSE_ON_KEY_FILTER_APPLY_APPLIED:
+      return "apply_keyboard_filter_applied";
+    case MUSE_ON_KEY_FILTER_APPLY_SERVICE_ABSENT:
+      return "apply_keyboard_filter_service_absent";
+    case MUSE_ON_KEY_FILTER_APPLY_SERVICE_UNCERTAIN:
+      return "apply_keyboard_filter_service_uncertain";
+    case MUSE_ON_KEY_FILTER_APPLY_CLIENT_REFRESH_FAILED:
+      return "apply_keyboard_filter_client_refresh_failed";
+    case MUSE_ON_KEY_FILTER_APPLY_WRITE_FAILED:
+      return "apply_keyboard_filter_write_failed";
+    case MUSE_ON_KEY_FILTER_APPLY_VERIFY_FAILED:
+      return "apply_keyboard_filter_verify_failed";
+    case MUSE_ON_KEY_FILTER_APPLY_ROLLBACK_UNVERIFIED:
+      return "apply_keyboard_filter_rollback_unverified";
+    case MUSE_ON_KEY_FILTER_APPLY_FATAL:
+      return "apply_keyboard_filter_fatal";
+  }
+  return "apply_keyboard_filter_unknown";
+}
+
+bool muse_on_key_filter_refresh_and_find_service(
+    const MuseOnKeyFilterClientOperations *operations, void *context,
+    void *existing_client, uint64_t requested_location_id,
+    uint64_t requested_registry_id, void **refreshed_client,
+    void **matched_service, MuseOnKeyFilterLookupResult *lookup_result) {
+  void *client;
+  void *service;
+
+  if (refreshed_client) *refreshed_client = NULL;
+  if (matched_service) *matched_service = NULL;
+  if (!operations || !operations->create_client ||
+      !operations->release_client || !operations->find_service ||
+      !refreshed_client || !matched_service || !lookup_result ||
+      requested_location_id == 0 || requested_registry_id == 0) {
+    return false;
+  }
+  client = operations->create_client(context);
+  if (!client) return false;
+  service = operations->find_service(
+      context, client, requested_location_id, requested_registry_id,
+      lookup_result);
+  if (existing_client) operations->release_client(context, existing_client);
+  *refreshed_client = client;
+  *matched_service = service;
+  return true;
 }
 
 static bool copy_uint64_property(IOHIDServiceClientRef service, CFStringRef key,
@@ -365,6 +498,35 @@ static IOHIDServiceClientRef find_keyboard_service(
   return match;
 }
 
+static void *create_event_system_client(void *context) {
+  (void)context;
+  return IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault);
+}
+
+static void release_event_system_client(void *context, void *client) {
+  (void)context;
+  if (client) CFRelease((CFTypeRef)client);
+}
+
+static void *find_event_system_keyboard_service(
+    void *context, void *client, uint64_t requested_location_id,
+    uint64_t requested_registry_id, MuseOnKeyFilterLookupResult *lookup_result) {
+  uint64_t matched_location_id = 0;
+  uint64_t matched_registry_id = 0;
+
+  (void)context;
+  return find_keyboard_service(
+      (IOHIDEventSystemClientRef)client, requested_location_id,
+      requested_registry_id, &matched_location_id, &matched_registry_id,
+      lookup_result);
+}
+
+static const MuseOnKeyFilterClientOperations key_filter_client_operations = {
+    .create_client = create_event_system_client,
+    .release_client = release_event_system_client,
+    .find_service = find_event_system_keyboard_service,
+};
+
 static CFArrayRef create_sink_mapping_array(void) {
   CFMutableArrayRef mappings;
   size_t index;
@@ -463,10 +625,7 @@ static void clear_saved_mapping(MuseOnKeyFilter *filter) {
   if (filter->original_mapping) CFRelease(filter->original_mapping);
   filter->original_mapping = NULL;
   filter->original_mapping_was_null = false;
-  filter->active_location_id = 0;
-  filter->active_registry_id = 0;
-  filter->restore_pending = false;
-  filter->active = false;
+  muse_on_key_filter_ownership_clear(&filter->ownership);
 }
 
 MuseOnKeyFilter *muse_on_key_filter_create(void) {
@@ -489,40 +648,50 @@ void muse_on_key_filter_destroy(MuseOnKeyFilter *filter) {
   free(filter);
 }
 
-bool muse_on_key_filter_apply(MuseOnKeyFilter *filter,
-                              uint64_t requested_location_id,
-                              uint64_t requested_registry_id) {
+MuseOnKeyFilterApplyResult muse_on_key_filter_apply(
+    MuseOnKeyFilter *filter, uint64_t requested_location_id,
+    uint64_t requested_registry_id) {
   IOHIDServiceClientRef service;
+  void *refreshed_client = NULL;
+  void *matched_service = NULL;
   CFTypeRef original_mapping;
   CFArrayRef sink_mapping;
-  uint64_t matched_location_id;
-  uint64_t matched_registry_id;
   MuseOnKeyFilterLookupResult lookup_result;
   bool property_set;
   bool verified;
+  bool rollback_verified;
 
-  if (!filter || filter->active || filter->restore_pending ||
-      !filter->client || requested_location_id == 0 ||
+  if (!filter || filter->ownership.active ||
+      filter->ownership.restore_pending || requested_location_id == 0 ||
       requested_registry_id == 0 ||
       !muse_on_key_filter_mapping_table_is_valid()) {
-    return false;
+    return MUSE_ON_KEY_FILTER_APPLY_FATAL;
   }
-  service = find_keyboard_service(
-      filter->client, requested_location_id, requested_registry_id,
-      &matched_location_id, &matched_registry_id, &lookup_result);
-  if (!service) return false;
+  if (!muse_on_key_filter_refresh_and_find_service(
+          &key_filter_client_operations, NULL, filter->client,
+          requested_location_id, requested_registry_id, &refreshed_client,
+          &matched_service, &lookup_result)) {
+    return MUSE_ON_KEY_FILTER_APPLY_CLIENT_REFRESH_FAILED;
+  }
+  filter->client = (IOHIDEventSystemClientRef)refreshed_client;
+  service = (IOHIDServiceClientRef)matched_service;
+  if (!service) {
+    return lookup_result == MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT
+               ? MUSE_ON_KEY_FILTER_APPLY_SERVICE_ABSENT
+               : MUSE_ON_KEY_FILTER_APPLY_SERVICE_UNCERTAIN;
+  }
   original_mapping = IOHIDServiceClientCopyProperty(
       service, CFSTR(kIOHIDUserKeyUsageMapKey));
   if (original_mapping && CFGetTypeID(original_mapping) != CFArrayGetTypeID()) {
     CFRelease(original_mapping);
     CFRelease(service);
-    return false;
+    return MUSE_ON_KEY_FILTER_APPLY_FATAL;
   }
   sink_mapping = create_sink_mapping_array();
   if (!sink_mapping) {
     if (original_mapping) CFRelease(original_mapping);
     CFRelease(service);
-    return false;
+    return MUSE_ON_KEY_FILTER_APPLY_FATAL;
   }
   /*
    * A prior force-quit can leave this exact temporary sink table behind.
@@ -542,9 +711,9 @@ bool muse_on_key_filter_apply(MuseOnKeyFilter *filter,
    */
   filter->original_mapping = original_mapping;
   filter->original_mapping_was_null = original_mapping == NULL;
-  filter->active_location_id = matched_location_id;
-  filter->active_registry_id = matched_registry_id;
-  filter->restore_pending = true;
+  filter->ownership.location_id = requested_location_id;
+  filter->ownership.registry_id = requested_registry_id;
+  filter->ownership.restore_pending = true;
 
   property_set = IOHIDServiceClientSetProperty(
       service, CFSTR(kIOHIDUserKeyUsageMapKey), sink_mapping);
@@ -552,11 +721,15 @@ bool muse_on_key_filter_apply(MuseOnKeyFilter *filter,
   CFRelease(sink_mapping);
   CFRelease(service);
   if (!verified) {
-    (void)muse_on_key_filter_restore(filter);
-    return false;
+    rollback_verified = muse_on_key_filter_restore(filter);
+    if (!rollback_verified) {
+      return MUSE_ON_KEY_FILTER_APPLY_ROLLBACK_UNVERIFIED;
+    }
+    return property_set ? MUSE_ON_KEY_FILTER_APPLY_VERIFY_FAILED
+                        : MUSE_ON_KEY_FILTER_APPLY_WRITE_FAILED;
   }
-  filter->active = true;
-  return true;
+  filter->ownership.active = true;
+  return MUSE_ON_KEY_FILTER_APPLY_APPLIED;
 }
 
 bool muse_on_key_filter_restore(MuseOnKeyFilter *filter) {
@@ -567,10 +740,11 @@ bool muse_on_key_filter_restore(MuseOnKeyFilter *filter) {
   bool restored;
 
   if (!filter || !filter->client) return false;
-  filter->active = false;
-  if (!filter->restore_pending) return true;
+  filter->ownership.active = false;
+  if (!filter->ownership.restore_pending) return true;
   service = find_keyboard_service(
-      filter->client, filter->active_location_id, filter->active_registry_id,
+      filter->client, filter->ownership.location_id,
+      filter->ownership.registry_id,
       &matched_location_id, &matched_registry_id, &lookup_result);
   if (!service) {
     if (lookup_result != MUSE_ON_KEY_FILTER_LOOKUP_CONFIRMED_ABSENT) {
@@ -588,18 +762,33 @@ bool muse_on_key_filter_restore(MuseOnKeyFilter *filter) {
   return true;
 }
 
+bool muse_on_key_filter_confirm_device_removed(
+    MuseOnKeyFilter *filter, uint64_t removed_location_id,
+    uint64_t removed_registry_id) {
+  if (!filter || !muse_on_key_filter_ownership_confirm_removed(
+                     &filter->ownership, removed_location_id,
+                     removed_registry_id)) {
+    return false;
+  }
+  /* UserKeyMapping belongs to this exact per-device service. Its confirmed
+   * removal destroys that mapping; a replacement at the same USB location is
+   * a different registry identity and must never be used as a restore target. */
+  clear_saved_mapping(filter);
+  return true;
+}
+
 bool muse_on_key_filter_is_active(const MuseOnKeyFilter *filter) {
-  return filter && filter->active;
+  return filter && filter->ownership.active;
 }
 
 bool muse_on_key_filter_needs_restore(const MuseOnKeyFilter *filter) {
-  return filter && filter->restore_pending;
+  return filter && filter->ownership.restore_pending;
 }
 
 uint64_t muse_on_key_filter_location_id(const MuseOnKeyFilter *filter) {
-  return filter ? filter->active_location_id : 0;
+  return filter ? filter->ownership.location_id : 0;
 }
 
 uint64_t muse_on_key_filter_registry_id(const MuseOnKeyFilter *filter) {
-  return filter ? filter->active_registry_id : 0;
+  return filter ? filter->ownership.registry_id : 0;
 }

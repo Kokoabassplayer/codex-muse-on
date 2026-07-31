@@ -31,6 +31,12 @@ typedef enum {
   MUSE_ON_DIAGNOSTIC_TERMINATION_UNKNOWN
 } MuseOnDiagnosticTerminationReason;
 
+typedef enum {
+  MUSE_ON_DIAGNOSTIC_ACTION_DISPATCHED = 0,
+  MUSE_ON_DIAGNOSTIC_ACTION_FAILED,
+  MUSE_ON_DIAGNOSTIC_ACTION_BLOCKED
+} MuseOnDiagnosticActionOutcome;
+
 typedef struct {
   bool has_error;
   char error_operation[MUSE_ON_DIAGNOSTIC_OPERATION_SIZE];
@@ -56,8 +62,12 @@ void muse_on_diagnostics_record_state(MuseOnDiagnostics *diagnostics,
                                        MuseOnStatus status,
                                        MuseOnInactiveReason reason,
                                        MuseOnSafetyFailure failure);
-void muse_on_diagnostics_record_action(MuseOnDiagnostics *diagnostics,
-                                        MuseOnActionId action);
+bool muse_on_diagnostic_action_outcome_from_event(
+    const char *event, MuseOnDiagnosticActionOutcome *outcome);
+bool muse_on_diagnostics_record_action(MuseOnDiagnostics *diagnostics,
+                                       MuseOnActionId action,
+                                       MuseOnActionPhase phase,
+                                       MuseOnDiagnosticActionOutcome outcome);
 void muse_on_diagnostics_record_error(MuseOnDiagnostics *diagnostics,
                                        MuseOnDiagnosticErrorCode error);
 void muse_on_diagnostics_reset_listener(MuseOnDiagnostics *diagnostics);

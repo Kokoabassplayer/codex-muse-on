@@ -90,9 +90,31 @@ static void test_stable_display_strings(void) {
                 "key_up") == 0);
 }
 
+static void test_hold_dispatch_guard_is_production_backed(void) {
+  MuseOnActionEvent begin = {MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+                             MUSE_ON_ACTION_BEGIN, MUSE_ON_EVENT_BLACK8_DOWN};
+  MuseOnActionEvent end = {MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD,
+                           MUSE_ON_ACTION_END, MUSE_ON_EVENT_BLACK8_UP};
+  MuseOnActionEvent submit = {MUSE_ON_ACTION_COMPOSER_SUBMIT,
+                              MUSE_ON_ACTION_TRIGGER,
+                              MUSE_ON_EVENT_BLACK6_DOWN};
+
+  assert(muse_on_shortcut_dispatch_decide(&begin, false) ==
+         MUSE_ON_SHORTCUT_DISPATCH_POST);
+  assert(muse_on_shortcut_dispatch_decide(&begin, true) ==
+         MUSE_ON_SHORTCUT_DISPATCH_IGNORE_DUPLICATE_HOLD_BEGIN);
+  assert(muse_on_shortcut_dispatch_decide(&end, false) ==
+         MUSE_ON_SHORTCUT_DISPATCH_IGNORE_ORPHAN_HOLD_END);
+  assert(muse_on_shortcut_dispatch_decide(&end, true) ==
+         MUSE_ON_SHORTCUT_DISPATCH_POST);
+  assert(muse_on_shortcut_dispatch_decide(&submit, false) ==
+         MUSE_ON_SHORTCUT_DISPATCH_POST);
+}
+
 int main(void) {
   test_all_confirmed_shortcuts_use_hyper_chord();
   test_invalid_action_phase_pairs_fail_closed();
   test_stable_display_strings();
+  test_hold_dispatch_guard_is_production_backed();
   return 0;
 }

@@ -97,7 +97,9 @@ typedef struct {
   MuseOnControlProfileMapping profiles[2];
 } MuseOnControlMapping;
 
-enum { MUSE_ON_HOLD_DEBOUNCE_NS = 20000000ULL };
+/* Require a stable hold edge, and rate-limit Submit to one deliberate press. */
+enum { MUSE_ON_HOLD_DEBOUNCE_NS = 80000000ULL };
+enum { MUSE_ON_SUBMIT_DEBOUNCE_NS = 250000000ULL };
 enum { MUSE_ON_TURNTABLE_INITIAL_REPEAT_NS = 600000000ULL };
 enum { MUSE_ON_TURNTABLE_REPEAT_NS = 250000000ULL };
 
@@ -129,8 +131,13 @@ bool muse_on_action_router_tick(MuseOnActionRouter *router, uint64_t timestamp_n
                                 MuseOnActionEvent *action);
 const char *muse_on_profile_string(MuseOnProfile profile);
 const char *muse_on_action_id_string(MuseOnActionId action);
+bool muse_on_action_id_from_string(const char *value, MuseOnActionId *action);
 const char *muse_on_action_display_name(MuseOnActionId action);
 const char *muse_on_action_phase_string(MuseOnActionPhase phase);
+bool muse_on_action_phase_from_string(const char *value,
+                                      MuseOnActionPhase *phase);
+bool muse_on_action_phase_valid(MuseOnActionId action,
+                                MuseOnActionPhase phase);
 const char *muse_on_action_phase_prompt(MuseOnActionPhase phase);
 const char *muse_on_event_name_string(MuseOnEventName event);
 

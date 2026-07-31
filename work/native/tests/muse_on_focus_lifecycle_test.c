@@ -14,6 +14,7 @@ typedef struct {
   unsigned int neutral_count;
   unsigned int begin_count;
   unsigned int end_count;
+  unsigned int submit_count;
 } TraceSink;
 
 static MuseOnTopologyCoordinatorInputs coordinator_inputs(
@@ -52,10 +53,14 @@ static void lifecycle_event(
     return;
   }
   assert(event->type == MUSE_ON_LISTENER_LIFECYCLE_EVENT_ACTION);
-  assert(event->action.id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
-  if (event->action.phase == MUSE_ON_ACTION_BEGIN) {
+  if (event->action.id == MUSE_ON_ACTION_COMPOSER_SUBMIT) {
+    assert(event->action.phase == MUSE_ON_ACTION_TRIGGER);
+    sink->submit_count++;
+  } else if (event->action.phase == MUSE_ON_ACTION_BEGIN) {
+    assert(event->action.id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
     sink->begin_count++;
   } else {
+    assert(event->action.id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD);
     assert(event->action.phase == MUSE_ON_ACTION_END);
     sink->end_count++;
   }
@@ -220,9 +225,92 @@ static void test_dry_run_routes_without_focus_transition(void) {
   assert(sink.begin_count == 1);
 }
 
+static void test_bouncy_hid_reports_emit_one_hold_pair_and_one_submit(void) {
+  static const uint8_t pedal_down[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x10, 0x00,
+  };
+  static const uint8_t pedal_release[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x00, 0x00,
+  };
+  static const uint8_t submit_down[12] = {
+      0x01, 0x80, 0x80, 0x80, 0x80, 0x80,
+      0x80, 0x80, 0xff, 0xff, 0x04, 0x00,
+  };
+  TraceSink sink = {0};
+  MuseOnListenerLifecycle lifecycle;
+  const uint64_t start_ns = UINT64_C(5000000000);
+  uint64_t tick_ns;
+
+  initialize_trace(&sink, &lifecycle);
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns + 5000000ULL, true));
+  for (tick_ns = start_ns + 10000000ULL;
+       tick_ns <= start_ns + 20000000ULL; tick_ns += 10000000ULL) {
+    muse_on_listener_lifecycle_tick(&lifecycle, tick_ns, true);
+    assert(sink.begin_count == 0 && sink.end_count == 0);
+  }
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + 30000000ULL, true));
+  for (tick_ns = start_ns + 40000000ULL;
+       tick_ns <= start_ns + 50000000ULL; tick_ns += 10000000ULL) {
+    muse_on_listener_lifecycle_tick(&lifecycle, tick_ns, true);
+    assert(sink.begin_count == 0 && sink.end_count == 0);
+  }
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_down,
+      sizeof(pedal_down), start_ns + 60000000ULL, true));
+  for (tick_ns = start_ns + 70000000ULL;
+       tick_ns < start_ns + 60000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS;
+       tick_ns += 10000000ULL) {
+    muse_on_listener_lifecycle_tick(&lifecycle, tick_ns, true);
+    assert(sink.begin_count == 0 && sink.end_count == 0);
+  }
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + 60000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS, true);
+  assert(sink.begin_count == 1 && sink.end_count == 0);
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + 2 * MUSE_ON_HOLD_DEBOUNCE_NS, true);
+  assert(sink.begin_count == 1 && sink.end_count == 0);
+
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + 300000000ULL, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + 305000000ULL, true));
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + 300000000ULL + MUSE_ON_HOLD_DEBOUNCE_NS, true);
+  muse_on_listener_lifecycle_tick(
+      &lifecycle, start_ns + 450000000ULL, true);
+  assert(sink.begin_count == 1 && sink.end_count == 1);
+
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, submit_down,
+      sizeof(submit_down), start_ns + 500000000ULL, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, pedal_release,
+      sizeof(pedal_release), start_ns + 550000000ULL, true));
+  assert(muse_on_listener_lifecycle_observe_report(
+      &lifecycle, MUSE_ON_INTERFACE_JOYSTICK, 1, submit_down,
+      sizeof(submit_down), start_ns + 600000000ULL, true));
+  assert(sink.submit_count == 1);
+}
+
 int main(void) {
+  assert(muse_on_listener_runtime_allows_route(false, false, false));
+  assert(!muse_on_listener_runtime_allows_route(true, false, false));
+  assert(!muse_on_listener_runtime_allows_route(false, true, false));
+  assert(!muse_on_listener_runtime_allows_route(false, false, true));
   test_captured_focus_epoch_trace();
   test_held_across_focus_return_is_blocked();
   test_dry_run_routes_without_focus_transition();
+  test_bouncy_hid_reports_emit_one_hold_pair_and_one_submit();
   return 0;
 }

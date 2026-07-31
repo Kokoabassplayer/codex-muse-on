@@ -93,6 +93,7 @@ struct ListenerState {
   bool topologyClassificationFailed;
   MuseOnRecoveryPolicy recoveryPolicy;
   MuseOnKeyFilterRestorePolicy filterRestorePolicy;
+  MuseOnKeyFilterApplyPolicy filterApplyPolicy;
   uint64_t filterRetryAfterNs;
   uint64_t permissionCheckAfterNs;
 };
@@ -503,6 +504,7 @@ static void emit_recovery_state(ListenerState *state) {
           muse_on_listener_lifecycle_is_foreground(&state->lifecycle),
       .inputs_released = inputsReleased,
       .filter_verified = filterVerified,
+      .filter_settling = state->filterApplyPolicy.waiting,
       .keyboard_open = state->keyboardOpen,
       .error_observed = state->recoveryErrorObserved,
   };
@@ -614,6 +616,7 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
   bool captured;
   bool postAccess;
   MuseOnShortcutInstruction shortcut;
+  MuseOnShortcutDispatchDecision dispatchDecision;
   bool posted;
 
   if (state->config.mode == MUSE_ON_MODE_ACTIVE &&
@@ -659,15 +662,16 @@ static void handle_action(ListenerState *state, const DeviceSlot *slot,
     emit_action("shortcut_map_failed", state, slot, action);
     return;
   }
-  if (action->id == MUSE_ON_ACTION_GLOBAL_DICTATION_HOLD) {
-    if (action->phase == MUSE_ON_ACTION_BEGIN && state->syntheticHoldDown) {
-      emit_action("duplicate_hold_ignored", state, slot, action);
-      return;
-    }
-    if (action->phase == MUSE_ON_ACTION_END && !state->syntheticHoldDown) {
-      emit_action("orphan_hold_release_ignored", state, slot, action);
-      return;
-    }
+  dispatchDecision = muse_on_shortcut_dispatch_decide(
+      action, state->syntheticHoldDown);
+  if (dispatchDecision ==
+      MUSE_ON_SHORTCUT_DISPATCH_IGNORE_DUPLICATE_HOLD_BEGIN) {
+    emit_action("duplicate_hold_ignored", state, slot, action);
+    return;
+  }
+  if (dispatchDecision == MUSE_ON_SHORTCUT_DISPATCH_IGNORE_ORPHAN_HOLD_END) {
+    emit_action("orphan_hold_release_ignored", state, slot, action);
+    return;
   }
 
   posted = muse_on_post_shortcut(&shortcut);
@@ -721,6 +725,11 @@ static bool external_route_gate(ListenerState *state) {
   bool captured;
   uint32_t controllerLocation;
 
+  if (!muse_on_listener_runtime_allows_route(
+          stopRequested != 0, state->releaseFailed,
+          state->safetyFailure != MUSE_ON_SAFETY_FAILURE_NONE)) {
+    return false;
+  }
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN) return true;
   if (state->config.safety_latched) return false;
   if (state->config.mode == MUSE_ON_MODE_ACTIVE &&
@@ -984,6 +993,10 @@ static void device_removed(void *context, IOReturn result, void *sender,
   ManagerContext *managerContext = context;
   ListenerState *state;
   DeviceSlot *slot;
+  MuseOnKeyFilterOwnership filterOwnership;
+  MuseOnKeyFilterRemovalDecision removalDecision;
+  uint32_t controllerLocation;
+  bool controllerTopologyValid;
 
   (void)sender;
   if (result != kIOReturnSuccess || !managerContext ||
@@ -1004,23 +1017,68 @@ static void device_removed(void *context, IOReturn result, void *sender,
   if (!slot || slot->removed || slot->kind != managerContext->kind) return;
 
   slot->removed = true;
+  muse_on_key_filter_apply_policy_init(&state->filterApplyPolicy);
   sync_lifecycle_binding(state);
   emit_device_event("device_removed", slot);
   emit_current_topology(state);
-  if (state->config.mode != MUSE_ON_MODE_DRY_RUN && state->keyFilterApplied) {
-    uint32_t controllerLocation;
-    if (!validated_controller_location(state, &controllerLocation)) {
-      restore_keyboard_filter(state, monotonic_ns(), "controller_disconnected",
-                              false);
+  if (state->config.mode == MUSE_ON_MODE_DRY_RUN) {
+    if (state->syntheticHoldDown) {
+      force_release_synthetic_hold(state, "device_removed");
+    }
+    return;
+  }
+  filterOwnership = (MuseOnKeyFilterOwnership){
+      .location_id = muse_on_key_filter_location_id(state->keyFilter),
+      .registry_id = muse_on_key_filter_registry_id(state->keyFilter),
+      .restore_pending =
+          muse_on_key_filter_needs_restore(state->keyFilter),
+      .active = muse_on_key_filter_is_active(state->keyFilter),
+  };
+  controllerTopologyValid =
+      validated_controller_location(state, &controllerLocation);
+  removalDecision = muse_on_key_filter_removal_decide(
+      slot->kind == kInterfaceKeyboard, &filterOwnership, slot->locationID,
+      slot->registryID, controllerTopologyValid, state->keyFilterApplied);
+  if (removalDecision == MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET ||
+      removalDecision ==
+          MUSE_ON_KEY_FILTER_REMOVAL_CONFIRM_EXACT_TARGET_AND_REAPPLY) {
+    bool holdReleased =
+        force_release_synthetic_hold(state, "keyboard_disconnected");
+    if (!holdReleased) {
+      stopRequested = 1;
+      return;
+    }
+    if (muse_on_key_filter_confirm_device_removed(
+            state->keyFilter, slot->locationID, slot->registryID)) {
+      state->keyFilterApplied = false;
+      state->filterRetryAfterNs = 0;
+      muse_on_key_filter_apply_policy_init(&state->filterApplyPolicy);
+      muse_on_key_filter_restore_policy_init(&state->filterRestorePolicy);
+      emit_capture_state(state, "filter_restored", "keyboard_disconnected");
+      if (muse_on_key_filter_removal_may_reapply(
+              removalDecision, holdReleased, state->releaseFailed)) {
+        activate_keyboard_filter(state, monotonic_ns(),
+                                 "keyboard_reconnected");
+        if (muse_on_key_filter_reapply_failed_terminally(
+                state->keyFilterApplied, state->filterApplyPolicy.waiting,
+                state->safetyFailure != MUSE_ON_SAFETY_FAILURE_NONE)) {
+          emit_safety_latch(state,
+                            MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+          stopRequested = 1;
+        }
+      }
       return;
     }
   }
-  if (slot->kind == kInterfaceKeyboard &&
-      slot->locationID == muse_on_key_filter_location_id(state->keyFilter) &&
-      state->config.mode != MUSE_ON_MODE_DRY_RUN) {
-    restore_keyboard_filter(state, monotonic_ns(), "keyboard_disconnected",
-                            false);
-  } else if (state->syntheticHoldDown) {
+  if (removalDecision == MUSE_ON_KEY_FILTER_REMOVAL_RESTORE_GENERIC) {
+    restore_keyboard_filter(
+        state, monotonic_ns(),
+        slot->kind == kInterfaceKeyboard ? "keyboard_disconnected"
+                                         : "controller_disconnected",
+        false);
+    return;
+  }
+  if (state->syntheticHoldDown) {
     force_release_synthetic_hold(state, "device_removed");
   }
 }
@@ -1069,6 +1127,7 @@ static bool restore_keyboard_filter(ListenerState *state, uint64_t nowNs,
       finalAttempt);
   if (decision == MUSE_ON_KEY_FILTER_RESTORE_COMPLETE) {
     state->filterRetryAfterNs = 0;
+    muse_on_key_filter_apply_policy_init(&state->filterApplyPolicy);
     emit_capture_state(state, "filter_restored", reason);
     return true;
   }
@@ -1091,6 +1150,8 @@ static void activate_keyboard_filter(ListenerState *state,
                                      uint64_t nowNs,
                                      const char *reason) {
   const DeviceSlot *keyboardSlot;
+  MuseOnKeyFilterApplyDecision applyDecision;
+  MuseOnKeyFilterApplyResult applyResult;
   uint32_t controllerLocation;
 
   if (state->config.mode == MUSE_ON_MODE_DRY_RUN ||
@@ -1104,6 +1165,7 @@ static void activate_keyboard_filter(ListenerState *state,
     }
   }
   if (!validated_controller_location(state, &controllerLocation)) {
+    muse_on_key_filter_apply_policy_init(&state->filterApplyPolicy);
     emit_capture_state(state, "filter_waiting", "controller_incomplete");
     state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
     return;
@@ -1111,20 +1173,49 @@ static void activate_keyboard_filter(ListenerState *state,
   keyboardSlot = active_keyboard_slot_at_location(state, controllerLocation);
   if (!keyboardSlot) {
     emit_capture_state(state, "filter_waiting", "keyboard_unavailable");
-    state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
+    applyDecision = muse_on_key_filter_apply_policy_evaluate(
+        &state->filterApplyPolicy, nowNs,
+        MUSE_ON_KEY_FILTER_APPLY_SERVICE_ABSENT);
+    if (applyDecision == MUSE_ON_KEY_FILTER_APPLY_FAILED) {
+      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+      stopRequested = 1;
+      state->filterRetryAfterNs = 0;
+    } else {
+      state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
+    }
     return;
   }
-  if (!muse_on_key_filter_apply(state->keyFilter, keyboardSlot->locationID,
-                                keyboardSlot->registryID)) {
-    emit_error(state, "apply_keyboard_filter", kIOReturnError);
-    if (muse_on_key_filter_needs_restore(state->keyFilter) &&
-        !restore_keyboard_filter(state, nowNs, "rollback_keyboard_filter",
-                                 false)) {
+  applyResult = muse_on_key_filter_apply(
+      state->keyFilter, keyboardSlot->locationID, keyboardSlot->registryID);
+  if (applyResult != MUSE_ON_KEY_FILTER_APPLY_APPLIED) {
+    if (applyResult == MUSE_ON_KEY_FILTER_APPLY_ROLLBACK_UNVERIFIED) {
+      emit_error(state, muse_on_key_filter_apply_result_string(applyResult),
+                 kIOReturnError);
+      stopRequested = 1;
+      if (restore_keyboard_filter(state, nowNs, "rollback_keyboard_filter",
+                                  false) &&
+          state->safetyFailure == MUSE_ON_SAFETY_FAILURE_NONE) {
+        emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+      }
       return;
     }
-    state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
+    applyDecision = muse_on_key_filter_apply_policy_evaluate(
+        &state->filterApplyPolicy, nowNs, applyResult);
+    if (applyDecision == MUSE_ON_KEY_FILTER_APPLY_FAILED) {
+      emit_error(state, muse_on_key_filter_apply_result_string(applyResult),
+                 kIOReturnError);
+      emit_safety_latch(state, MUSE_ON_SAFETY_FAILURE_DEVICE_UNCERTAIN);
+      stopRequested = 1;
+      state->filterRetryAfterNs = 0;
+    } else {
+      emit_capture_state(state, "filter_waiting",
+                         muse_on_key_filter_apply_result_string(applyResult));
+      state->filterRetryAfterNs = nowNs + kFilterRetryIntervalNs;
+    }
     return;
   }
+  (void)muse_on_key_filter_apply_policy_evaluate(
+      &state->filterApplyPolicy, nowNs, MUSE_ON_KEY_FILTER_APPLY_APPLIED);
   state->keyFilterApplied = muse_on_key_filter_is_active(state->keyFilter);
   state->filterRetryAfterNs = 0;
   sync_lifecycle_binding(state);
@@ -1150,6 +1241,9 @@ static void update_focus_and_filter(ListenerState *state, uint64_t nowNs) {
   wantFilter = muse_on_should_filter_keyboard(state->config.mode) &&
                filter_permissions_ready(state) &&
                validated_controller_location(state, &controllerLocation);
+  if (!wantFilter) {
+    muse_on_key_filter_apply_policy_init(&state->filterApplyPolicy);
+  }
   if (!wantFilter && (state->keyFilterApplied ||
                       muse_on_key_filter_needs_restore(state->keyFilter)) &&
       nowNs >= state->filterRetryAfterNs) {
